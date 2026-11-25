@@ -1,4 +1,4 @@
-# Fluent Steam Lua 管理工具
+# diknow-steam-lua
 
 <p>
   <a href="README.md">
@@ -12,13 +12,18 @@
   </a>
 </p>
 
-基于 WPF + Fluent Design 开发的现代化轻量级 Steam Lua 入库管理工具，目前仅适配OpenSteamTool
+基于 WPF + Fluent Design 的 Steam Lua 入库管理工具个人定制版，派生自 [Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)，目前仅适配 OpenSteamTool。
 
-> 项目介绍页：https://huanyuejue.github.io/Fluent-Steam-Lua/
+> 这是非官方的个人修改版，与原版作者无关，也不提供原版的社群与反馈渠道。
 
-> FSL项目TG聊天反馈群：[点击跳转加入](https://t.me/FluentSL)
+## 本版改动
 
-> FSL项目QQ聊天反馈群：[点击跳转加入](https://qun.qq.com/universal-share/share?ac=1&authKey=MQ1TVyxN4lUMerzDnHMsl6bp7noFeScwL%2F6C7AhW12PJx9fBlfJt7k%2BJ9uo%2B1SGY&busi_data=eyJncm91cENvZGUiOiIxMDU0MjI4MTYyIiwidG9rZW4iOiJjOGZHRHJKemF4Qytwa1lyMUgxbHdKYnRRcjFqS0plWFBEb3VJVFFqWXc4NzBYUFlMNDlRcUludHJRZ3ovRW5yIiwidWluIjoiNjMwOTExODEzIn0%3D&data=Z5XGMODvXtiqhqhOreDKo3DW9BAsa1W-WfOUjRaP6twkkcvauHBJIJxmahQU2kaAwpyJB5wcxgVqlkIRpQRG1w&svctype=4&tempid=h5_group_info) 或 复制群号：1054228162
+- 产品名称、窗口标题、EXE 图标与关于页统一为 `diknow-steam-lua`
+- 新增暗色主题资源，原有跟随系统 / 深色 / 浅色主题保留
+- 移除清单监听、账号文件提取、问题反馈与常见问题入口
+- 主程序更新只从本仓库的 Releases 读取
+- 配置、缓存、日志统一存放于 `%LOCALAPPDATA%\diknow-steam-lua`
+- 自动更新兼容被改名的 EXE（如 `xxx(3).exe`、`xxx - 副本.exe`）
 
 ## 预览
 
@@ -47,11 +52,9 @@
 - 已入库的游戏自动读取并展示封面和中文游戏名（三种布局展示自由切换）
 - 搜索预览并入库新游戏（支持 AppId / 游戏名）
 - 查询当前游戏清单的DLC入库情况（支持一键补全DLC）
-- 从 Steam 正版账号中提取已拥有游戏的Lua清单,Bin成就文件和Manifest清单
 - 快速禁用或启用 Lua 清单的游戏入库状态，无需删除 Lua 清单
 - 支持固定游戏清单版本到最新版本或当前已安装版本
 - 支持游戏的Denuvo授权信息提取和使用授权（appticket和eticket）
-- 支持清单监听自动获取 manifest 来修补下载无网络的问题
 - 支持480联机和OnlineFix联机补丁一键搜索下载
 
 #### 修改器
@@ -94,26 +97,54 @@
 - 背景色支持 亚克力/云母/无效果
 - 界面支持多语言（简体中文 / English），设置内切换即时生效，无需重启
 - 支持自动检测更新（可关闭）
-- 内置问题反馈通道
 
+## 下载
+
+在 [Releases](https://github.com/lgtlgt0015-code/diknow-steam-lua-wpf/releases) 页面选择：
+
+| 文件 | 说明 |
+| --- | --- |
+| `diknow-steam-lua-<版本>-win-x64.exe` | 自包含单文件，内置 .NET 8 运行时，双击即可运行 |
+| `diknow-steam-lua-<版本>-single-file.zip` | 自动更新包（单文件版安装） |
+| `diknow-steam-lua-<版本>-loose-file.zip` | 自动更新包（散文件版安装） |
 
 ## 系统要求
 
 - Windows 10 1809+ / Windows 11
-- [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+- 自包含版本无需额外安装运行库；散文件版需要 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+
+## 数据目录
+
+配置、缓存与日志统一存放于：
+
+```
+%LOCALAPPDATA%\diknow-steam-lua
+```
 
 ## 构建方法
 
 前置要求：[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)，构建时自动拉取 CloudRedirect 原生 DLL（默认跟随保留仓最新 Release，需联网，带 SHA256 校验）。要复现旧构建可固定版本：`dotnet build -p:CloudRedirectVersion=v2.6.5`。
 
-发布为单文件可执行程序：
+发布为自包含单文件（发布包使用的形式）：
 
 ```cmd
-dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="Fluent Steam Lua" -p:PublishSingleFile=true -o publish/single
+dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained true -p:DebugType=none -p:AppExeName="diknow-steam-lua" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish/standalone
 ```
 
-发布为散文件可执行程序：
+发布为单文件（依赖系统运行时）：
 
 ```cmd
-dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -o publish/loose
+dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="diknow-steam-lua" -p:PublishSingleFile=true -o publish/single
 ```
+
+发布为散文件：
+
+```cmd
+dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="diknow-steam-lua" -o publish/loose
+```
+
+## 许可与致谢
+
+- 本项目基于 [Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua) 修改，沿用其 zlib License，见 [LICENSE](LICENSE)
+- 云存档重定向基于 [CloudRedirect](https://github.com/huanyuejue/CloudRedirect)（MIT License）
+- 其他第三方组件与许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)

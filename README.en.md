@@ -1,4 +1,4 @@
-# Fluent Steam Lua Manager
+# diknow-steam-lua
 
 <p>
   <a href="README.md">
@@ -12,11 +12,18 @@
   </a>
 </p>
 
-A modern, lightweight Steam Lua library manager built with WPF + Fluent Design. Currently supports OpenSteamTool only.
+A personal, customized build of a Steam Lua library manager, derived from [Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua). Built with WPF + Fluent Design and currently supports OpenSteamTool only.
 
-> Project page: https://huanyuejue.github.io/Fluent-Steam-Lua/
+> This is an unofficial modified version, not affiliated with the original author, and it does not carry the original project's community or feedback channels.
 
-> FSL Telegram group: [Click to join](https://t.me/FluentSL)
+## Changes in this fork
+
+- Product name, window title, EXE icon and About page unified as `diknow-steam-lua`
+- Added dark theme resources; the original follow-system / dark / light themes remain available
+- Removed manifest monitoring, account file extraction, issue feedback and FAQ entries
+- App updates are read only from this repository's Releases
+- Settings, cache and logs live under `%LOCALAPPDATA%\diknow-steam-lua`
+- Auto-update tolerates a renamed EXE (e.g. `xxx(3).exe`, `xxx - copy.exe`)
 
 ## Preview
 
@@ -45,11 +52,9 @@ A modern, lightweight Steam Lua library manager built with WPF + Fluent Design. 
 - Auto-reads imported games and shows cover art and localized names (three switchable layouts)
 - Search and import new games by AppID or game name
 - Check DLC import status for the current game's manifest, with one-click DLC completion
-- Extract Lua manifests, achievement Bin files and Manifest files from games you own on a retail Steam account
 - Quickly disable or enable a game's Lua manifest without deleting it
 - Pin a game's manifest to the latest or currently installed version
 - Extract and use Denuvo authorization data (appticket and eticket)
-- Manifest monitoring auto-fetches manifests to work around download failures caused by network issues
 - One-click search and download for 480 and OnlineFix multiplayer patches
 
 #### Trainers
@@ -92,25 +97,54 @@ A modern, lightweight Steam Lua library manager built with WPF + Fluent Design. 
 - Backdrop support: Acrylic / Mica / none
 - Multi-language UI (Simplified Chinese / English), switchable in settings with immediate effect and no restart
 - Automatic update check (can be disabled)
-- Built-in issue feedback channel
+
+## Download
+
+Pick a file from the [Releases](https://github.com/lgtlgt0015-code/diknow-steam-lua-wpf/releases) page:
+
+| File | Description |
+| --- | --- |
+| `diknow-steam-lua-<version>-win-x64.exe` | Self-contained single file with the .NET 8 runtime bundled |
+| `diknow-steam-lua-<version>-single-file.zip` | Update package for single-file installs |
+| `diknow-steam-lua-<version>-loose-file.zip` | Update package for loose-file installs |
 
 ## Requirements
 
 - Windows 10 1809+ / Windows 11
-- [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+- The self-contained build needs nothing extra; the loose build needs [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+
+## Data directory
+
+Settings, cache and logs are stored in:
+
+```
+%LOCALAPPDATA%\diknow-steam-lua
+```
 
 ## Building
 
 Prerequisites: [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0). The build automatically fetches the CloudRedirect native DLL (following the latest release of the maintained repo by default, requires network, with SHA256 verification). To reproduce an older build, pin the version: `dotnet build -p:CloudRedirectVersion=v2.6.5`.
 
-Publish as a single-file executable:
+Self-contained single file (the form used for releases):
 
 ```cmd
-dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="Fluent Steam Lua" -p:PublishSingleFile=true -o publish/single
+dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained true -p:DebugType=none -p:AppExeName="diknow-steam-lua" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish/standalone
 ```
 
-Publish as loose files:
+Single file (framework-dependent):
 
 ```cmd
-dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -o publish/loose
+dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="diknow-steam-lua" -p:PublishSingleFile=true -o publish/single
 ```
+
+Loose files:
+
+```cmd
+dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="diknow-steam-lua" -o publish/loose
+```
+
+## License and credits
+
+- Based on [Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua), under its zlib License, see [LICENSE](LICENSE)
+- Cloud save redirection is built on [CloudRedirect](https://github.com/huanyuejue/CloudRedirect) (MIT License)
+- Other third-party components and licenses: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
