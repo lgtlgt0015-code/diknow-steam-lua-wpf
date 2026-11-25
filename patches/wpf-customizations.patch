@@ -108,7 +108,7 @@ index 1da33e9..d0f1833 100644
      }
  }
 diff --git a/Resources/Lang/en.json b/Resources/Lang/en.json
-index f79ce4a..6a1bc92 100644
+index f79ce4a..7b877a9 100644
 --- a/Resources/Lang/en.json
 +++ b/Resources/Lang/en.json
 @@ -214,7 +214,7 @@
@@ -168,7 +168,7 @@ index f79ce4a..6a1bc92 100644
    "Svc_FbNetworkFail": "Feedback send failed (network error): {0}",
    "Svc_FbAuthFailed": "Feedback credentials expired. Submit an Issue on GitHub instead.",
    "Svc_FbSendFailed": "Feedback send failed ({0}). Submit an Issue on GitHub instead.",
-@@ -1116,6 +1116,7 @@
+@@ -1116,16 +1116,10 @@
    "Svc_MhWriteFailed": "Failed to write depotcache: {0}",
    "About_Version": "Version {0}",
    "About_UpdLatestTitle": "Already up to date",
@@ -176,7 +176,17 @@ index f79ce4a..6a1bc92 100644
    "About_UpdLatestBody": "You are on the latest version: {0}",
    "About_UpdFailTitle": "Update check failed",
    "About_UpdFailBody": "Could not get latest version info: {0}",
-@@ -1188,6 +1189,9 @@
+-  "About_QqTitle": "Chat Feedback Group",
+-  "About_QqAsk": "Join the QQ chat feedback group?",
+-  "About_QqFullHint": "If the group is full, close this window and click the Telegram icon on the right to join the Telegram group.",
+-  "About_QqJump": "Open group chat",
+-  "About_QqCopy": "Copy group number",
+-  "About_QqJumpFailTitle": "Open failed",
+-  "About_QqJumpFailBody": "Could not open the group link: {0}\nYou can copy group number {1} to join manually.",
+   "About_FbLabelTitle": "Issue title",
+   "About_FbLabelBody": "Issue description",
+   "About_FbLabelContact": "Contact (optional, for replies)",
+@@ -1188,6 +1182,9 @@
    "Svc_SpNoPath": "Steam install path not found, configure it on the Settings page first",
    "Svc_SpNoExe": "steam.exe not found: {0}",
    "Svc_SpStartFailed": "Failed to start Steam: {0}",
@@ -186,7 +196,7 @@ index f79ce4a..6a1bc92 100644
    "LogCat_LogSystem": "Log System",
    "Svc_LogEnabled": "Logging enabled",
    "Svc_LogDisabled": "Application exiting, logging disabled",
-@@ -1688,14 +1692,12 @@
+@@ -1688,14 +1685,11 @@
    "Manifest_AutoStopCode": "Auto-stopped Code monitor (mutually exclusive)",
    "Manifest_KeySaved": "API Key saved",
    "Manifest_KeyEmpty": "No API Key entered",
@@ -196,23 +206,21 @@ index f79ce4a..6a1bc92 100644
    "About_Feedback": "Feedback",
    "About_Faq": "FAQ",
 -  "About_QqTip": "Join QQ feedback group",
-+  "About_QqTip": "Copy QQ 3402851762",
    "About_TgTip": "Join the Telegram group",
 -  "About_GitHubTip": "GitHub Repo",
 +  "About_GitHubTip": "diknow · GitHub",
    "About_AfdianTip": "Support via Afdian. No perks, purely voluntary. Thank you!",
    "Common_Search": "Search",
    "Common_Select": "Select",
-@@ -1757,6 +1759,8 @@
+@@ -1757,6 +1751,7 @@
    "Settings_Backdrop_Acrylic": "Acrylic",
    "Settings_Backdrop_Mica": "Mica",
    "Settings_Backdrop_None": "None",
-+  "About_QqCopied": "Copied QQ {0}",
 +  "Settings_Theme_Diknow": "Dusk",
    "Settings_Theme_System": "Follow System",
    "Settings_Theme_Dark": "Dark",
    "Settings_Theme_Light": "Light",
-@@ -1791,8 +1795,8 @@
+@@ -1791,8 +1786,8 @@
    "Ruku_RemoteManifest": "Remote Manifest Repo",
    "Ruku_CacheNotUpdated": " · Cache not updated yet",
    "Ruku_LastUpdated": " · Last updated {0}",
@@ -223,7 +231,7 @@ index f79ce4a..6a1bc92 100644
    "Ruku_RankLoadFailed": "Failed to load hot list: {0}",
    "Ruku_Searching": "Searching: {0}",
    "Ruku_EnterQuery": "Enter a game ID or name",
-@@ -2140,7 +2144,7 @@
+@@ -2140,7 +2135,7 @@
    "Updater_CommandLine": "Original command line: {0}",
    "Updater_NotWritable": "The target directory is not writable. Requesting administrator access.",
    "Updater_ElevationPrompt": "The installation directory is not writable. It may be in a system folder such as Program Files.\n\nRetry this update as administrator?\n\nTarget directory: {0}",
@@ -232,7 +240,7 @@ index f79ce4a..6a1bc92 100644
    "Updater_PermissionCancelled": "Update cancelled because the installation directory is not writable. You can reinstall the app in a user folder, such as the Desktop, and try again.",
    "Updater_Elevated": "An elevated updater has taken over. This instance will exit.",
    "Updater_ElevationFailed": "Could not restart as administrator (the UAC prompt may have been cancelled). No changes were made.",
-@@ -2173,7 +2177,7 @@
+@@ -2173,7 +2168,7 @@
    "Updater_RestartDone": "Restarted background process: {0}",
    "Updater_RestartFailed": "Could not restart background process {0}: {1}",
    "Updater_ManualDownload": "\n\nYou can download the update manually from GitHub and replace the app files.",
@@ -242,7 +250,7 @@ index f79ce4a..6a1bc92 100644
    "Trainer_SharedConfigWriteFailed": "Could not write shared binding configuration: {0}"
  }
 diff --git a/Resources/Lang/zh.json b/Resources/Lang/zh.json
-index 4b9da9a..01b4b48 100644
+index 4b9da9a..2cfeff3 100644
 --- a/Resources/Lang/zh.json
 +++ b/Resources/Lang/zh.json
 @@ -214,7 +214,7 @@
@@ -302,7 +310,7 @@ index 4b9da9a..01b4b48 100644
    "Svc_FbNetworkFail": "反馈发送失败（网络异常）：{0}",
    "Svc_FbAuthFailed": "反馈通道凭证失效，请前往 GitHub 提交 Issue",
    "Svc_FbSendFailed": "反馈发送失败（{0}），请前往 GitHub 提交 Issue",
-@@ -1116,6 +1116,7 @@
+@@ -1116,16 +1116,10 @@
    "Svc_MhWriteFailed": "写入 depotcache 失败：{0}",
    "About_Version": "版本 {0}",
    "About_UpdLatestTitle": "已是最新版本",
@@ -310,7 +318,17 @@ index 4b9da9a..01b4b48 100644
    "About_UpdLatestBody": "当前已是最新版本：{0}",
    "About_UpdFailTitle": "检查更新失败",
    "About_UpdFailBody": "无法获取最新版本信息：{0}",
-@@ -1188,6 +1189,9 @@
+-  "About_QqTitle": "聊天反馈群",
+-  "About_QqAsk": "要加入QQ的聊天反馈群吗？",
+-  "About_QqFullHint": "如群已满，可关闭本窗口后点右侧的 Telegram 图标加入 TG 群。",
+-  "About_QqJump": "跳转群聊",
+-  "About_QqCopy": "复制群号",
+-  "About_QqJumpFailTitle": "跳转失败",
+-  "About_QqJumpFailBody": "未能打开加群链接：{0}\n可复制群号 {1} 手动加群。",
+   "About_FbLabelTitle": "问题标题",
+   "About_FbLabelBody": "问题描述",
+   "About_FbLabelContact": "联系方式（可选，方便回复）",
+@@ -1188,6 +1182,9 @@
    "Svc_SpNoPath": "未检测到 Steam 安装路径，请先在设置页面配置",
    "Svc_SpNoExe": "未找到 steam.exe：{0}",
    "Svc_SpStartFailed": "启动 Steam 失败：{0}",
@@ -320,7 +338,7 @@ index 4b9da9a..01b4b48 100644
    "LogCat_LogSystem": "日志系统",
    "Svc_LogEnabled": "日志记录已开启",
    "Svc_LogDisabled": "程序退出，日志记录已关闭",
-@@ -1688,14 +1692,12 @@
+@@ -1688,14 +1685,11 @@
    "Manifest_AutoStopCode": "已自动停止 Code 监听（双监听互斥）",
    "Manifest_KeySaved": "API Key 已保存",
    "Manifest_KeyEmpty": "未填写 API Key",
@@ -330,23 +348,21 @@ index 4b9da9a..01b4b48 100644
    "About_Feedback": "问题反馈",
    "About_Faq": "常见问题",
 -  "About_QqTip": "加入QQ聊天反馈群",
-+  "About_QqTip": "复制 QQ 3402851762",
    "About_TgTip": "加入 Telegram 交流群",
 -  "About_GitHubTip": "GitHub 仓库",
 +  "About_GitHubTip": "diknow · GitHub",
    "About_AfdianTip": "爱发电支持，无任何优待区别，全凭自愿，感谢支持",
    "Common_Search": "搜索",
    "Common_Select": "选择",
-@@ -1757,6 +1759,8 @@
+@@ -1757,6 +1751,7 @@
    "Settings_Backdrop_Acrylic": "亚克力",
    "Settings_Backdrop_Mica": "云母",
    "Settings_Backdrop_None": "无",
-+  "About_QqCopied": "已复制 QQ {0}",
 +  "Settings_Theme_Diknow": "暮紫",
    "Settings_Theme_System": "跟随系统",
    "Settings_Theme_Dark": "深色模式",
    "Settings_Theme_Light": "浅色模式",
-@@ -1791,8 +1795,8 @@
+@@ -1791,8 +1786,8 @@
    "Ruku_RemoteManifest": "远程清单仓库",
    "Ruku_CacheNotUpdated": " · 缓存尚未更新",
    "Ruku_LastUpdated": " · 上次更新 {0}",
@@ -357,7 +373,7 @@ index 4b9da9a..01b4b48 100644
    "Ruku_RankLoadFailed": "热门榜单加载失败：{0}",
    "Ruku_Searching": "搜索：{0}",
    "Ruku_EnterQuery": "请输入游戏ID或名称",
-@@ -2140,7 +2144,7 @@
+@@ -2140,7 +2135,7 @@
    "Updater_CommandLine": "原始命令行: {0}",
    "Updater_NotWritable": "目标目录不可写，请求提权后重试。",
    "Updater_ElevationPrompt": "安装目录无写入权限，可能是装在了 Program Files 等系统目录。\n\n是否以管理员身份重试本次更新？\n\n目标目录：{0}",
@@ -366,7 +382,7 @@ index 4b9da9a..01b4b48 100644
    "Updater_PermissionCancelled": "安装目录无写入权限，已取消。可将软件重装到用户目录（如桌面）后再更新。",
    "Updater_Elevated": "已拉起提权副本接管，本实例退出。",
    "Updater_ElevationFailed": "提权重启失败（可能取消了 UAC 确认），未做任何更改。",
-@@ -2173,7 +2177,7 @@
+@@ -2173,7 +2168,7 @@
    "Updater_RestartDone": "已重启常驻进程：{0}",
    "Updater_RestartFailed": "重启常驻进程失败 {0}：{1}",
    "Updater_ManualDownload": "\n\n可前往 GitHub 手动下载覆盖更新。",
@@ -874,7 +890,7 @@ index f72cf32..056e7ee 100644
      [ObservableProperty]
      private bool _isServiceInstalled;
 diff --git a/Views/AboutView.xaml b/Views/AboutView.xaml
-index 8927e29..b0e9302 100644
+index 8927e29..3a11172 100644
 --- a/Views/AboutView.xaml
 +++ b/Views/AboutView.xaml
 @@ -30,16 +30,10 @@
@@ -898,7 +914,7 @@ index 8927e29..b0e9302 100644
                  </Border>
  
                  <!-- 版本号 -->
-@@ -57,32 +51,16 @@
+@@ -57,65 +51,20 @@
                              <SolidColorBrush Color="{DynamicResource ControlFillColorDefault}" Opacity="0.45"/>
                          </Button.Background>
                      </Button>
@@ -926,18 +942,18 @@ index 8927e29..b0e9302 100644
          </controls:SmoothScrollViewer>
  
 -        <!-- 底部图标：QQ 群 + Telegram 群 + GitHub + 爱发电，统一样式 -->
-+        <!-- Personal contact links -->
-         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                     Margin="0,0,0,24">
+-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+-                    Margin="0,0,0,24">
 -            <Button Click="QqGroup_Click" ToolTip="{l:Loc About_QqTip}"
-+            <Button Click="CopyQq_Click" ToolTip="{l:Loc About_QqTip}"
-                     Background="Transparent" BorderThickness="0" Padding="0"
-                     Margin="0,0,0,0" Cursor="Hand"
-                     Width="40" Height="40">
-@@ -92,14 +70,7 @@
-                           Stretch="Fill"/>
-                 </Grid>
-             </Button>
+-                    Background="Transparent" BorderThickness="0" Padding="0"
+-                    Margin="0,0,0,0" Cursor="Hand"
+-                    Width="40" Height="40">
+-                <Grid Width="18" Height="18">
+-                    <Path Data="M21.395 15.035a40 40 0 0 0-.803-2.264l-1.079-2.695c.001-.032.014-.562.014-.836C19.526 4.632 17.351 0 12 0S4.474 4.632 4.474 9.241c0 .274.013.804.014.836l-1.08 2.695a39 39 0 0 0-.802 2.264c-1.021 3.283-.69 4.643-.438 4.673.54.065 2.103-2.472 2.103-2.472 0 1.469.756 3.387 2.394 4.771-.612.188-1.363.479-1.845.835-.434.32-.379.646-.301.778.343.578 5.883.369 7.482.189 1.6.18 7.14.389 7.483-.189.078-.132.132-.458-.301-.778-.483-.356-1.233-.646-1.846-.836 1.637-1.384 2.393-3.302 2.393-4.771 0 0 1.563 2.537 2.103 2.472.251-.03.581-1.39-.438-4.673"
+-                          Fill="{DynamicResource TextFillColorSecondaryBrush}"
+-                          Stretch="Fill"/>
+-                </Grid>
+-            </Button>
 -            <Button Click="Telegram_Click" ToolTip="{l:Loc About_TgTip}"
 -                    Background="Transparent" BorderThickness="0"
 -                    Margin="8,0,0,0" Cursor="Hand"
@@ -946,11 +962,15 @@ index 8927e29..b0e9302 100644
 -                      Fill="{DynamicResource TextFillColorSecondaryBrush}"
 -                      Stretch="Uniform"/>
 -            </Button>
-+
-             <Button Click="GitHub_Click" ToolTip="{l:Loc About_GitHubTip}"
-                     Background="Transparent" BorderThickness="0"
-                     Margin="8,0,0,0" Cursor="Hand"
-@@ -108,14 +79,7 @@
+-            <Button Click="GitHub_Click" ToolTip="{l:Loc About_GitHubTip}"
+-                    Background="Transparent" BorderThickness="0"
+-                    Margin="8,0,0,0" Cursor="Hand"
+-                    Width="40" Height="40">
++        <Button Click="GitHub_Click" ToolTip="{l:Loc About_GitHubTip}"
++                HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,24"
++                Background="Transparent" BorderThickness="0"
++                Cursor="Hand" Width="40" Height="40">
+             <Path Data="M12,0C5.373,0,0,5.373,0,12c0,5.302,3.438,9.8,8.207,11.387c0.599,0.111,0.793-0.261,0.793-0.577v-2.234c-3.338,0.726-4.033-1.416-4.033-1.416c-0.546-1.387-1.333-1.756-1.333-1.756c-1.089-0.745,0.083-0.729,0.083-0.729c1.205,0.084,1.839,1.237,1.839,1.237c1.07,1.834,2.807,1.304,3.492,0.997c0.107-0.775,0.418-1.305,0.762-1.604c-2.665-0.305-5.467-1.334-5.467-5.931c0-1.311,0.469-2.381,1.236-3.221c-0.124-0.303-0.535-1.524,0.117-3.176c0,0,1.008-0.322,3.301,1.23C9.573,7.056,10.599,6.923,11.619,6.918c1.02,0.005,2.047,0.138,3.006,0.404c2.291-1.552,3.297-1.23,3.297-1.23c0.653,1.653,0.242,2.874,0.118,3.176c0.77,0.84,1.235,1.911,1.235,3.221c0,4.609-2.807,5.624-5.479,5.921c0.43,0.372,0.823,1.102,0.823,2.222v3.293c0,0.319,0.192,0.694,0.801,0.576C20.565,21.795,24,17.298,24,12C24,5.373,18.627,0,12,0z"
                    Fill="{DynamicResource TextFillColorSecondaryBrush}"
                    Stretch="Uniform"/>
          </Button>
@@ -962,15 +982,15 @@ index 8927e29..b0e9302 100644
 -                  Fill="{DynamicResource TextFillColorSecondaryBrush}"
 -                  Stretch="Uniform"/>
 -        </Button>
+-        </StackPanel>
 +
-         </StackPanel>
      </Grid>
  </UserControl>
 diff --git a/Views/AboutView.xaml.cs b/Views/AboutView.xaml.cs
-index 4d37d16..ebdff08 100644
+index 4d37d16..0f00eca 100644
 --- a/Views/AboutView.xaml.cs
 +++ b/Views/AboutView.xaml.cs
-@@ -15,28 +15,14 @@ namespace SteamLuaManager.Views;
+@@ -15,28 +15,13 @@ namespace SteamLuaManager.Views;
  
  public partial class AboutView : UserControl, INotifyPropertyChanged
  {
@@ -989,7 +1009,6 @@ index 4d37d16..ebdff08 100644
 -        public override string ToString() => Path.GetFileName(FullPath);
 -    }
 +    private const string ProjectUrl = "https://github.com/lgtlgt0015-code";
-+    private const string QqNumber = "3402851762";
  
      private readonly string? _version;
      public string VersionText => L.Get("About_Version", _version ?? "1.0.0");
@@ -1001,7 +1020,7 @@ index 4d37d16..ebdff08 100644
      public AboutView()
      {
          _version = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
-@@ -45,29 +31,6 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
+@@ -45,29 +30,6 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
          // View 常驻缓存：语言切换时重算版本行文案，其余动态弹窗在打开时按当前语言生成
          LocalizationService.Instance.PropertyChanged += (_, _) =>
              PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VersionText)));
@@ -1031,13 +1050,12 @@ index 4d37d16..ebdff08 100644
      }
  
      private void GitHub_Click(object sender, RoutedEventArgs e)
-@@ -75,15 +38,17 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
+@@ -75,17 +37,6 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
          Process.Start(new ProcessStartInfo(ProjectUrl) { UseShellExecute = true });
      }
  
 -    private void Afdian_Click(object sender, RoutedEventArgs e)
-+    private async void CopyQq_Click(object sender, RoutedEventArgs e)
-     {
+-    {
 -        Process.Start(new ProcessStartInfo(AfdianUrl) { UseShellExecute = true });
 -    }
 -
@@ -1045,19 +1063,12 @@ index 4d37d16..ebdff08 100644
 -    private void Telegram_Click(object sender, RoutedEventArgs e)
 -    {
 -        Process.Start(new ProcessStartInfo(TelegramUrl) { UseShellExecute = true });
-+        try
-+        {
-+            Clipboard.SetText(QqNumber);
-+            await ShowDialogAsync("QQ", L.Get("About_QqCopied", QqNumber));
-+        }
-+        catch (System.Runtime.InteropServices.ExternalException)
-+        {
-+            await ShowDialogAsync("QQ", QqNumber);
-+        }
-     }
- 
+-    }
+-
      private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
-@@ -94,8 +59,10 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
+     {
+         try
+@@ -94,8 +45,10 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
              if (updateService == null) return;
              var result = await updateService.CheckForUpdateAsync();
  
@@ -1070,7 +1081,7 @@ index 4d37d16..ebdff08 100644
              else
                  await ShowDialogAsync(L.Get("About_UpdLatestTitle"), L.Get("About_UpdLatestBody", result.CurrentVersion));
          }
-@@ -105,274 +72,6 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
+@@ -105,274 +58,6 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
          }
      }
  

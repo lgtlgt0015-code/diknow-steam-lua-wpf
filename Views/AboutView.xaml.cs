@@ -16,7 +16,6 @@ namespace SteamLuaManager.Views;
 public partial class AboutView : UserControl, INotifyPropertyChanged
 {
     private const string ProjectUrl = "https://github.com/lgtlgt0015-code";
-    private const string QqNumber = "3402851762";
 
     private readonly string? _version;
     public string VersionText => L.Get("About_Version", _version ?? "1.0.0");
@@ -36,19 +35,6 @@ public partial class AboutView : UserControl, INotifyPropertyChanged
     private void GitHub_Click(object sender, RoutedEventArgs e)
     {
         Process.Start(new ProcessStartInfo(ProjectUrl) { UseShellExecute = true });
-    }
-
-    private async void CopyQq_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            Clipboard.SetText(QqNumber);
-            await ShowDialogAsync("QQ", L.Get("About_QqCopied", QqNumber));
-        }
-        catch (System.Runtime.InteropServices.ExternalException)
-        {
-            await ShowDialogAsync("QQ", QqNumber);
-        }
     }
 
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
