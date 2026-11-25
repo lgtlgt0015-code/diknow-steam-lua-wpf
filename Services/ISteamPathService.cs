@@ -1,0 +1,32 @@
+﻿namespace SteamLuaManager.Services;
+
+public enum SteamToolType
+{
+    None,
+    OpenSteamTool,
+    SteamTools,
+    GreenLuma
+}
+
+public interface ISteamPathService
+{
+    string? DetectSteamPath();
+    string? GetLuaFolder();
+    string? GetLuaConfigFile();
+    bool SetConfiguredLuaPath(string path);
+    bool ResetConfiguredLuaPath();
+    bool GetFriendBroadcastEnabled();
+    bool SetFriendBroadcastEnabled(bool enabled);
+    string GetManifestSource();
+    bool SetManifestSource(string source);
+    bool GetManifestFailoverEnabled();
+    bool SetManifestFailoverEnabled(bool enabled);
+    bool GetCloudEnabled();
+    bool SetCloudEnabled(bool enabled);
+    string? GetCloudLibraryPath();
+    void SetCustomPath(string path);
+    string? GetCustomPath();
+    SteamToolType DetectSteamToolType();
+    List<string> GetAllLibraryPaths();
+    string? FindAppManifest(int appId);
+}

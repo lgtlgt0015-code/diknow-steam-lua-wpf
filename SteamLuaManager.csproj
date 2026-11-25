@@ -1,0 +1,383 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetPlatformVersion>10.0.18362.0</TargetPlatformVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName Condition="'$(AppExeName)' != ''">$(AppExeName)</AssemblyName>
+    <AssemblyName Condition="'$(AppExeName)' == ''">diknow-steam-lua</AssemblyName>
+    <RootNamespace>SteamLuaManager</RootNamespace>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Title>diknow-steam-lua</Title>
+    <Product>diknow-steam-lua</Product>
+    <Version>1.5.5.4</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+    <Resource Include="Assets\app.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
+    <PackageReference Include="iNKORE.UI.WPF" Version="1.2.8" />
+    <PackageReference Include="iNKORE.UI.WPF.Modern" Version="0.10.2.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+    <PackageReference Include="Serilog" Version="4.4.0" />
+    <PackageReference Include="SharpCompress" Version="0.50.4" />
+    <PackageReference Include="SteamKit2" Version="3.4.0" />
+    <PackageReference Include="Tomlyn" Version="2.10.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- UseWindowsForms 引入的隐式全局 using 与 WPF 命名冲突，仅托盘文件显式引用 -->
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- CloudRedirect 原生 DLL：构建时自动拉取自家保留仓 Release 成品并验签，仓库内不存放源码与二进制。
+         默认 latest，跟随上游最新 Release；需要复现旧构建时可固定，例如
+         dotnet build -p:CloudRedirectVersion=v2.6.5 -->
+    <CloudRedirectVersion Condition="'$(CloudRedirectVersion)' == ''">latest</CloudRedirectVersion>
+    <!-- 缓存根目录：任务内部按实际解析到的 Release tag 分子目录，最新版与固定版互不覆盖 -->
+    <CloudRedirectDllRoot>$(ProjectDir)obj\CloudRedirectDll</CloudRedirectDllRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="SvcMonitor\**\*" />
+    <EmbeddedResource Remove="SvcMonitor\**\*" />
+    <None Remove="SvcMonitor\**\*" />
+    <Compile Remove="Bridge\**\*" />
+    <EmbeddedResource Remove="Bridge\**\*" />
+    <None Remove="Bridge\**\*" />
+    <Page Remove="Bridge\**\*" />
+    <Compile Remove="extension\**\*" />
+    <EmbeddedResource Remove="extension\**\*" />
+    <None Remove="extension\**\*" />
+    <Compile Remove="Updater\**\*" />
+    <EmbeddedResource Remove="Updater\**\*" />
+    <None Remove="Updater\**\*" />
+    <Compile Remove="CrackTool\**\*" />
+    <EmbeddedResource Remove="CrackTool\**\*" />
+    <None Remove="CrackTool\**\*" />
+    <!-- thirdparty 是外部源码归档（CloudRedirect 保留库自有工程），不参与本工程编译 -->
+    <Compile Remove="thirdparty\**\*" />
+    <EmbeddedResource Remove="thirdparty\**\*" />
+    <None Remove="thirdparty\**\*" />
+    <Page Remove="thirdparty\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\SvcMonitor.zip" />
+    <EmbeddedResource Include="Resources\Bridge.zip" />
+    <EmbeddedResource Include="Resources\Updater.zip" />
+    <EmbeddedResource Include="Resources\CloudRedirectDll.zip" />
+    <EmbeddedResource Include="Resources\Lang\*.json" />
+    <Compile Include="obj\Generated\CloudRedirectInfo.g.cs" />
+  </ItemGroup>
+
+  <!-- 免启动破解：进程内引用 SteamAutoCrack.Core（已改 net8/x64，随主程序编译） -->
+  <ItemGroup>
+    <!-- 改名只走 AppExeName（本工程消费）：NuGet restore 把 AssemblyName 当项目名，
+         直接全局传 -p:AssemblyName 会让主工程与 Core 同名而报 Ambiguous project name -->
+    <ProjectReference Include="CrackTool\SteamAutoCrack.Core\SteamAutoCrack.Core.csproj" />
+  </ItemGroup>
+
+  <!-- 单文件发布时把发布内容（含 CrackTool 的 SteamAPICheckBypass 劫持 DLL）一并打进 exe，
+       对外只有一个文件；内容运行时释放到 %TEMP%\.net，程序数据目录仍在 exe 旁不受影响 -->
+  <PropertyGroup>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <!-- 原生劫持 DLL 由 Core 工程自带 None 规则跟随输出（SteamAPICheckBypass\ 子目录，
+       正是 Core 按 NATIVE_DLL_SEARCH_DIRECTORIES 查找的位置），无需额外拷贝 -->
+
+  <!-- 内嵌更新器与源码同步：每次构建自动重新打包，避免改了 Updater 源码却发出去旧版 -->
+  <Target Name="BuildUpdaterForEmbed" BeforeTargets="BeforeBuild">
+    <Exec Command="dotnet publish $(ProjectDir)Updater\Updater.csproj -c $(Configuration) -o $(ProjectDir)Resources\UpdaterPublish" />
+    <ZipDirectory SourceDirectory="$(ProjectDir)Resources\UpdaterPublish" DestinationFile="$(ProjectDir)Resources\Updater.zip" Overwrite="true" />
+    <RemoveDir Directories="$(ProjectDir)Resources\UpdaterPublish" />
+  </Target>
+
+  <Target Name="BuildSvcMonitorForEmbed" BeforeTargets="BeforeBuild">
+    <Exec Command="dotnet publish $(ProjectDir)SvcMonitor\SvcMonitor.csproj -c $(Configuration) -o $(ProjectDir)Resources\SvcMonitorPublish" />
+    <ZipDirectory SourceDirectory="$(ProjectDir)Resources\SvcMonitorPublish"
+                  DestinationFile="$(ProjectDir)Resources\SvcMonitor.zip"
+                  Overwrite="true" />
+    <RemoveDir Directories="$(ProjectDir)Resources\SvcMonitorPublish" />
+  </Target>
+
+  <!-- 商店页一键入库的桥接进程与浏览器扩展：同样随主程序一起打包内嵌，
+       用户开启功能时由主程序释放到 LocalAppData，避免额外分发文件 -->
+  <Target Name="BuildBridgeForEmbed" BeforeTargets="BeforeBuild">
+    <ItemGroup>
+      <BridgePublishFiles Include="$(ProjectDir)extension\**\*" />
+    </ItemGroup>
+    <Exec Command="dotnet publish $(ProjectDir)Bridge\Bridge.csproj -c $(Configuration) -r win-x64 --self-contained false -p:DebugType=none -o $(ProjectDir)Resources\BridgePublish" />
+    <Copy SourceFiles="@(BridgePublishFiles)"
+          DestinationFiles="@(BridgePublishFiles->'$(ProjectDir)Resources\BridgePublish\extension\%(RecursiveDir)%(Filename)%(Extension)')" />
+    <ZipDirectory SourceDirectory="$(ProjectDir)Resources\BridgePublish"
+                  DestinationFile="$(ProjectDir)Resources\Bridge.zip"
+                  Overwrite="true" />
+    <RemoveDir Directories="$(ProjectDir)Resources\BridgePublish" />
+  </Target>
+
+  <!-- 构建时拉取官方 Release 成品并验签：纯内联任务，不依赖外部脚本与 C++ 工具链 -->
+  <UsingTask TaskName="FetchCloudRedirectDll" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Version ParameterType="System.String" Required="true" />
+      <RootDir ParameterType="System.String" Required="true" />
+      <DllPath ParameterType="System.String" Output="true" />
+      <ResolvedVersion ParameterType="System.String" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Net.Http" />
+      <Using Namespace="System.Security.Cryptography" />
+      <Code Type="Fragment" Language="cs">
+        <![CDATA[
+        var dllName = "cloud_redirect.dll";
+        var repo = "https://github.com/huanyuejue/CloudRedirect";
+        var spec = (Version ?? "").Trim();
+        var wantLatest = spec.Length == 0 || spec.Equals("latest", StringComparison.OrdinalIgnoreCase);
+
+        // latest 时先把"最新"解析成具体 tag：缓存按 tag 分目录、日志可读。
+        // 走 API 会消耗匿名配额（60 次/小时），但比 github.com 主站的直连稳定，构建频率下够用。
+        string tag = wantLatest ? null : spec;
+        Exception resolveError = null;
+        if (wantLatest)
+        {
+            try
+            {
+                tag = ResolveLatestTag(repo);
+            }
+            catch (Exception ex)
+            {
+                resolveError = ex;
+            }
+        }
+
+        if (tag == null)
+        {
+            // 解析不出最新版本（离线/被墙/上游改动）：优先沿用本地已缓存的成品，别把构建卡死在网络上
+            var reason = resolveError == null ? "未知原因" : resolveError.Message;
+            var cachedDir = NewestCachedDir(RootDir, dllName);
+            if (cachedDir == null)
+            {
+                Log.LogError($"解析 CloudRedirect 最新 Release 失败：{reason}；本地也没有可复用的缓存，请检查网络后重试。");
+            }
+            else
+            {
+                ResolvedVersion = Path.GetFileName(cachedDir);
+                DllPath = Path.Combine(cachedDir, dllName);
+                Log.LogWarning($"解析 CloudRedirect 最新 Release 失败（{reason}），本次构建沿用本地缓存 {ResolvedVersion}。");
+            }
+        }
+        else
+        {
+            ResolvedVersion = tag;
+            var destDir = Path.Combine(RootDir, tag);
+            var marker = Path.Combine(destDir, ".fetch-ok");
+            var dllFile = Path.Combine(destDir, dllName);
+            // 统一用带具体 tag 的地址：latest/download 这个快捷路径在 GitHub 侧会返回 502，
+            // 反正 tag 已经在上面解析出来了，走 tag 路径更稳
+            var baseUrl = $"{repo}/releases/download/{tag}";
+
+            string expected = null;
+            try
+            {
+                using var http = new HttpClient();
+                http.Timeout = TimeSpan.FromSeconds(60);
+                http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "SteamLuaManager-Build");
+
+                // 先取远端 .sha256（几十字节）与本地缓存比对：内容一致说明上游没发新版，直接跳过下载
+                var shaText = http.GetStringAsync($"{baseUrl}/{dllName}.sha256").GetAwaiter().GetResult();
+                expected = shaText.Split((char[])null, StringSplitOptions.RemoveEmptyEntries)[0].Trim().ToUpperInvariant();
+
+                var cacheOk = File.Exists(marker) && File.Exists(dllFile)
+                              && File.ReadAllText(marker).Trim().ToUpperInvariant() == expected
+                              && HashFile(dllFile) == expected;
+                if (cacheOk)
+                {
+                    Log.LogMessage(MessageImportance.High, $"cloud_redirect.dll {tag} 已是最新，跳过下载。");
+                }
+                else
+                {
+                    Log.LogMessage(MessageImportance.High, $"正在下载 cloud_redirect.dll {tag} ...");
+                    var dllBytes = http.GetByteArrayAsync($"{baseUrl}/{dllName}").GetAwaiter().GetResult();
+                    using var sha = SHA256.Create();
+                    var actual = BitConverter.ToString(sha.ComputeHash(dllBytes)).Replace("-", "").ToUpperInvariant();
+                    if (expected != actual)
+                    {
+                        Log.LogError($"SHA256 校验失败（期望 {expected}，实得 {actual}）");
+                    }
+                    else
+                    {
+                        if (Directory.Exists(destDir)) Directory.Delete(destDir, true);
+                        Directory.CreateDirectory(destDir);
+                        File.WriteAllBytes(dllFile, dllBytes);
+                        File.WriteAllText(marker, expected);
+                        Log.LogMessage(MessageImportance.High, $"cloud_redirect.dll {tag} 已就绪（SHA256 已验证）。");
+                    }
+                }
+                DllPath = dllFile;
+            }
+            catch (Exception ex)
+            {
+                // 网络异常时，只要本地有成品就继续构建（缓存里通常是上次成功拉到的同一 tag）
+                if (File.Exists(dllFile))
+                {
+                    DllPath = dllFile;
+                    Log.LogWarning($"联网拉取 cloud_redirect.dll {tag} 失败（{ex.Message}），本次构建沿用本地缓存。");
+                }
+                else
+                {
+                    Log.LogError($"拉取 cloud_redirect.dll 失败：{ex.Message}，请检查网络后重试。");
+                }
+            }
+        }
+
+        // 解析最新 tag：优先走 api.github.com，它比 github.com 主站在国内稳定得多；
+        // API 不可用时退回网页重定向解析，两条路都断才判定失败
+        string ResolveLatestTag(string repoUrl)
+        {
+            var apiError = "";
+            try
+            {
+                var tag = ResolveLatestTagViaApi(repoUrl);
+                if (tag != null) return tag;
+            }
+            catch (Exception ex)
+            {
+                apiError = ex.Message;
+            }
+
+            try
+            {
+                return ResolveLatestTagViaRedirect(repoUrl);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"未能解析最新版本：API 方式（{apiError}），重定向方式（{ex.Message}）");
+            }
+        }
+
+        string ResolveLatestTagViaApi(string repoUrl)
+        {
+            // https://github.com/{owner}/{repo} -> https://api.github.com/repos/{owner}/{repo}/releases/latest
+            var slug = repoUrl.Substring("https://github.com/".Length).Trim('/');
+            using var http = new HttpClient();
+            http.Timeout = TimeSpan.FromSeconds(30);
+            http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "SteamLuaManager-Build");
+            http.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/vnd.github+json");
+            using var resp = http.GetAsync($"https://api.github.com/repos/{slug}/releases/latest").GetAwaiter().GetResult();
+            if (!resp.IsSuccessStatusCode) return null;
+            var json = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            // 只取 tag_name，避免为一次取值引入 JSON 解析依赖
+            var idx = json.IndexOf("\"tag_name\"", StringComparison.Ordinal);
+            if (idx < 0) return null;
+            var colon = json.IndexOf(':', idx);
+            if (colon < 0) return null;
+            var firstQuote = json.IndexOf('"', colon + 1);
+            if (firstQuote < 0) return null;
+            var secondQuote = json.IndexOf('"', firstQuote + 1);
+            if (secondQuote < 0) return null;
+            var tag = json.Substring(firstQuote + 1, secondQuote - firstQuote - 1).Trim();
+            return tag.Length > 0 ? tag : null;
+        }
+
+        string ResolveLatestTagViaRedirect(string repoUrl)
+        {
+            using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+            using var http = new HttpClient(handler);
+            http.Timeout = TimeSpan.FromSeconds(30);
+            http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "SteamLuaManager-Build");
+            using var resp = http.GetAsync($"{repoUrl}/releases/latest").GetAwaiter().GetResult();
+            var location = resp.Headers.Location == null ? "" : resp.Headers.Location.ToString();
+            var idx = location.IndexOf("/tag/", StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+            {
+                var parsed = location.Substring(idx + 5).Trim('/');
+                var cut = parsed.IndexOfAny(new[] { '?', '#' });
+                if (cut >= 0) parsed = parsed.Substring(0, cut);
+                if (parsed.Length > 0) return parsed;
+            }
+            throw new InvalidOperationException($"HTTP {(int)resp.StatusCode}，未取到 tag 重定向");
+        }
+
+        string NewestCachedDir(string root, string file)
+        {
+            if (!Directory.Exists(root)) return null;
+            string best = null;
+            var bestStamp = DateTime.MinValue;
+            foreach (var dir in Directory.GetDirectories(root))
+            {
+                var candidate = Path.Combine(dir, file);
+                if (!File.Exists(candidate)) continue;
+                var stamp = File.GetLastWriteTimeUtc(candidate);
+                if (best == null || stamp > bestStamp)
+                {
+                    best = dir;
+                    bestStamp = stamp;
+                }
+            }
+            return best;
+        }
+
+        string HashFile(string path)
+        {
+            using var sha = SHA256.Create();
+            return BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(path))).Replace("-", "").ToUpperInvariant();
+        }
+
+        // 无显式 return：收尾的 return !Log.HasLoggedErrors 由任务工厂自动追加，
+        // 成功只记 Message（返回 true），失败已记 Error（返回 false）；显式 return 会让它变死代码报 CS0162
+        ]]>
+      </Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="FetchCloudRedirectDll" BeforeTargets="BeforeBuild">
+    <FetchCloudRedirectDll Version="$(CloudRedirectVersion)" RootDir="$(CloudRedirectDllRoot)">
+      <Output TaskParameter="DllPath" PropertyName="CloudRedirectDllPath" />
+      <Output TaskParameter="ResolvedVersion" PropertyName="CloudRedirectResolvedVersion" />
+    </FetchCloudRedirectDll>
+    <Copy SourceFiles="$(CloudRedirectDllPath)" DestinationFolder="$(ProjectDir)Resources\CloudRedirectDllPublish" />
+    <ZipDirectory SourceDirectory="$(ProjectDir)Resources\CloudRedirectDllPublish"
+                  DestinationFile="$(ProjectDir)Resources\CloudRedirectDll.zip"
+                  Overwrite="true" />
+    <RemoveDir Directories="$(ProjectDir)Resources\CloudRedirectDllPublish" />
+
+    <!-- 把包内 DLL 的指纹固化进程序集：运行时靠它与已部署的 DLL 比对，
+         判断要不要提示用户重新部署（DLL 自身没有版本资源可用） -->
+    <GetFileHash Files="$(CloudRedirectDllPath)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_CloudRedirectDllHash" />
+    </GetFileHash>
+    <PropertyGroup>
+      <_CloudRedirectSha>$([System.String]::Copy('%(_CloudRedirectDllHash.FileHash)').Replace('-','').ToLowerInvariant())</_CloudRedirectSha>
+      <_CloudRedirectTag>$(CloudRedirectResolvedVersion)</_CloudRedirectTag>
+    </PropertyGroup>
+    <ItemGroup>
+      <CloudRedirectInfoLine Include="// &lt;auto-generated /&gt; Generated at build time from CloudRedirect release. Do not edit. Not committed." />
+      <CloudRedirectInfoLine Include="namespace SteamLuaManager.Services%3B" />
+      <CloudRedirectInfoLine Include="internal static class CloudRedirectInfo" />
+      <CloudRedirectInfoLine Include="{" />
+      <CloudRedirectInfoLine Include="    internal const string BundledVersion = &quot;$(_CloudRedirectTag)&quot;%3B" />
+      <CloudRedirectInfoLine Include="    internal const string BundledSha256 = &quot;$(_CloudRedirectSha)&quot;%3B" />
+      <CloudRedirectInfoLine Include="}" />
+    </ItemGroup>
+    <MakeDir Directories="$(ProjectDir)obj\Generated" />
+    <WriteLinesToFile File="$(ProjectDir)obj\Generated\CloudRedirectInfo.g.cs" Lines="@(CloudRedirectInfoLine)" Overwrite="true" Encoding="UTF-8" />
+  </Target>
+
+
+</Project>

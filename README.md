@@ -1,1 +1,119 @@
-# diknow-steam-lua-wpf
+# Fluent Steam Lua 管理工具
+
+<p>
+  <a href="README.md">
+    <img src="https://flagcdn.com/w40/cn.png" width="22" alt="China flag">
+    <b>简体中文</b>
+  </a>
+  &nbsp;|&nbsp;
+  <a href="README.en.md">
+    <img src="https://flagcdn.com/w40/us.png" width="22" alt="United States flag">
+    English
+  </a>
+</p>
+
+基于 WPF + Fluent Design 开发的现代化轻量级 Steam Lua 入库管理工具，目前仅适配OpenSteamTool
+
+> 项目介绍页：https://huanyuejue.github.io/Fluent-Steam-Lua/
+
+> FSL项目TG聊天反馈群：[点击跳转加入](https://t.me/FluentSL)
+
+> FSL项目QQ聊天反馈群：[点击跳转加入](https://qun.qq.com/universal-share/share?ac=1&authKey=MQ1TVyxN4lUMerzDnHMsl6bp7noFeScwL%2F6C7AhW12PJx9fBlfJt7k%2BJ9uo%2B1SGY&busi_data=eyJncm91cENvZGUiOiIxMDU0MjI4MTYyIiwidG9rZW4iOiJjOGZHRHJKemF4Qytwa1lyMUgxbHdKYnRRcjFqS0plWFBEb3VJVFFqWXc4NzBYUFlMNDlRcUludHJRZ3ovRW5yIiwidWluIjoiNjMwOTExODEzIn0%3D&data=Z5XGMODvXtiqhqhOreDKo3DW9BAsa1W-WfOUjRaP6twkkcvauHBJIJxmahQU2kaAwpyJB5wcxgVqlkIRpQRG1w&svctype=4&tempid=h5_group_info) 或 复制群号：1054228162
+
+## 预览
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/huanyuejue/Fluent-Steam-Lua/assets/screenshots/home.gif" width="400" />
+    </td>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/huanyuejue/Fluent-Steam-Lua/assets/screenshots/ruku.gif" width="400" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/huanyuejue/Fluent-Steam-Lua/assets/screenshots/setting.gif" width="400" />
+    </td>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/huanyuejue/Fluent-Steam-Lua/assets/screenshots/dlc.gif" width="400" />
+    </td>
+  </tr>
+</table>
+
+## 功能特性
+
+#### 入库管理
+- 已入库的游戏自动读取并展示封面和中文游戏名（三种布局展示自由切换）
+- 搜索预览并入库新游戏（支持 AppId / 游戏名）
+- 查询当前游戏清单的DLC入库情况（支持一键补全DLC）
+- 从 Steam 正版账号中提取已拥有游戏的Lua清单,Bin成就文件和Manifest清单
+- 快速禁用或启用 Lua 清单的游戏入库状态，无需删除 Lua 清单
+- 支持固定游戏清单版本到最新版本或当前已安装版本
+- 支持游戏的Denuvo授权信息提取和使用授权（appticket和eticket）
+- 支持清单监听自动获取 manifest 来修补下载无网络的问题
+- 支持480联机和OnlineFix联机补丁一键搜索下载
+
+#### 修改器
+- 搜索游戏的修改器并下载管理（风灵月影修改器）
+- 修改器支持绑定游戏进程，以达到开启游戏自动启动修改器
+- 绑定后支持开启修改器的同时自动激活修改器的指定功能项
+
+#### 内核
+- 个人维护fork分支 OpenSteamTool
+- 支持快捷 安装/更新/卸载 OpenSteamTool 内核
+- 支持自定义 Lua 清单文件的扫描存放位置
+- 支持向好友广播Lua入库的游戏的真实游玩状态
+- 支持热切换内核使用的上游 Manifest 清单库
+
+#### Steam
+- 快捷启动和重启Steam程序
+- 快捷切换登录本地已有凭证的Steam账号
+- 一键管理当前库里已拥有游戏的成就数据并保存云端（解锁/回锁）
+
+#### 云存档重定向
+- 基于 [CloudRedirect](https://github.com/huanyuejue/CloudRedirect) 实现
+- 将 Lua 入库的游戏的 Steam 云存档重定向到自选的存储位置，修复云存档报错问题
+- 支持本地目录、Google Drive、OneDrive、Cloudflare R2、S3 兼容存储、WebDAV 六种存储方式，可在界面随时切换
+- 开关与存储位置变更需重启 Steam 生效，成就与时长跟随云端同步
+- 目标目录支持自定义路径与一键重置默认，切换位置时自动迁移旧存档
+- 展示并管理已重定向的游戏，支持一键打开路径和清空存档（游戏恢复最初状态）
+- 支持删除存档：先完整备份并验证数量，通过后才删，备份可手动拷回恢复
+
+#### 免Steam启动游戏
+- 一键去除 SteamStub 并部署 Goldberg 模拟器，游戏免 Steam 启动且可正常弹成就完成体验
+- 支持还原破解；模拟器支持下载/更新（下载源跟随接口设置的镜像偏好，直连/镜像自动切换）
+- 内置 AppID 查询：用游戏目录名搜索候选并回填
+- Steam Web API Key 选填：填了可补全模拟器的成就与库存信息，不填则跳过，不影响破解本身
+- 注意：仅 SteamStub 游戏有效，使用 Denuvo 加密的游戏无效
+
+#### 特性
+- 文件变更自动监控并刷新缓存
+- 基于 Fluent Design 的现代化界面，使用WPF编译，方便调试
+- 主题支持 跟随系统/深色模式/浅色模式
+- 背景色支持 亚克力/云母/无效果
+- 界面支持多语言（简体中文 / English），设置内切换即时生效，无需重启
+- 支持自动检测更新（可关闭）
+- 内置问题反馈通道
+
+
+## 系统要求
+
+- Windows 10 1809+ / Windows 11
+- [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+
+## 构建方法
+
+前置要求：[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)，构建时自动拉取 CloudRedirect 原生 DLL（默认跟随保留仓最新 Release，需联网，带 SHA256 校验）。要复现旧构建可固定版本：`dotnet build -p:CloudRedirectVersion=v2.6.5`。
+
+发布为单文件可执行程序：
+
+```cmd
+dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="Fluent Steam Lua" -p:PublishSingleFile=true -o publish/single
+```
+
+发布为散文件可执行程序：
+
+```cmd
+dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -o publish/loose
+```

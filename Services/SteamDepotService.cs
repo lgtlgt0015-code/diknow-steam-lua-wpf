@@ -1,0 +1,967 @@
+using System.IO;
+using System.Net.Http;
+using System.Runtime;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using SteamLuaManager.Models;
+
+namespace SteamLuaManager.Services;
+
+public class SteamDepotService : ISteamDepotService
+{
+    private readonly IHttpClientProvider _httpClientProvider;
+    private readonly ISteamPathService _steamPathService;
+    private readonly ISteamAppInfoService _appInfoService;
+    private readonly ISettingsService _settingsService;
+    private readonly string _cacheFolder;
+    private string _currentSource = "DepotKey";
+    private readonly Dictionary<string, (string DepotKeysUrl, string TokenKeysUrl)> _resolvedUrls = new();
+
+    private const string DefaultDepotKeysUrl = "https://api.993499094.xyz/depotkeys.json";
+    private const string DefaultTokenKeysUrl = "https://api.993499094.xyz/appaccesstokens.json";
+    private const string LastUpdateStampFileName = ".lastupdate";
+    private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromHours(24);
+
+    private static readonly string[] SourceNames = ["DepotKey"];
+
+    // 懒加载常驻字典：首次入库时建，后续复用，文件更新后失效
+    private Dictionary<string, string>? _cachedDepotKeys;
+    private Dictionary<string, string>? _cachedAppTokens;
+    private DateTime _cachedDepotKeysWriteTime;
+    private DateTime _cachedAppTokensWriteTime;
+    private string? _cachedSource;
+    private readonly SemaphoreSlim _cacheLock = new(1, 1);
+
+    public event Action? AllSourcesUpdated;
+
+    public SteamDepotService(ISteamPathService steamPathService, IHttpClientProvider httpClientProvider, ISteamAppInfoService appInfoService, ISettingsService settingsService)
+    {
+        _steamPathService = steamPathService;
+        _httpClientProvider = httpClientProvider;
+        _appInfoService = appInfoService;
+        _settingsService = settingsService;
+
+        // 缓存目录可由外层指定：桥接进程与主程序共用同一份密钥库，
+        // 否则两边各存一份 depotkeys.json，白占几十兆还要各自联网更新
+        var cacheOverride = Environment.GetEnvironmentVariable("FLUENT_CACHE_DIR");
+        _cacheFolder = !string.IsNullOrWhiteSpace(cacheOverride)
+            ? cacheOverride
+            : AppDataPaths.CacheDirectory;
+
+        if (!Directory.Exists(_cacheFolder))
+            Directory.CreateDirectory(_cacheFolder);
+    }
+
+    public void UseDataSource(string source)
+    {
+        _currentSource = source;
+    }
+
+    private string GetSourceCacheDir() =>
+        Path.Combine(_cacheFolder, "v1");
+
+    private static string SourceCacheDirOf(string cacheFolder) =>
+        Path.Combine(cacheFolder, "v1");
+
+    private static string LastUpdateStampPathOf(string cacheFolder) =>
+        Path.Combine(SourceCacheDirOf(cacheFolder), LastUpdateStampFileName);
+
+    /// <summary>某数据源上次成功更新缓存的时间（本地时区），无时间戳则返回 null。</summary>
+    public DateTime? GetLastUpdateTime(string source)
+    {
+        try
+        {
+            var path = LastUpdateStampPathOf(_cacheFolder);
+            if (!File.Exists(path)) return null;
+            var text = File.ReadAllText(path);
+            if (DateTime.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var t))
+                return t.ToLocalTime();
+        }
+        catch (Exception ex) { LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_ReadStampFailed", source, ex.Message)); }
+        return null;
+    }
+
+    private static void WriteLastUpdateStamp(string cacheFolder)
+    {
+        try
+        {
+            var dir = SourceCacheDirOf(cacheFolder);
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(LastUpdateStampPathOf(cacheFolder),
+                DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+        }
+        catch (Exception ex) { LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_WriteStampFailed", ex.Message)); }
+    }
+
+    // 轻量计数 JSON 顶层属性数，避免反序列化整个大字典
+    private static int CountJsonProps(byte[] data, string label)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(data);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                ? doc.RootElement.EnumerateObject().Count() : 0;
+        }
+        catch (Exception ex) { LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_ParseKeysFailed", label, ex.Message)); return 0; }
+    }
+
+    private static async Task<int> CountFileJsonPropsAsync(string path, string label, CancellationToken ct)
+    {
+        if (!File.Exists(path)) return 0;
+        try
+        {
+            await using var fs = File.OpenRead(path);
+            using var doc = await JsonDocument.ParseAsync(fs, cancellationToken: ct);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                ? doc.RootElement.EnumerateObject().Count() : 0;
+        }
+        catch (Exception ex) { LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_ParseKeysFailed", label, ex.Message)); return 0; }
+    }
+
+    private string GetDepotKeysPath() =>
+        Path.Combine(GetSourceCacheDir(), "depotkeys.json");
+
+    private string GetTokenKeysPath() =>
+        Path.Combine(GetSourceCacheDir(), "appaccesstokens.json");
+
+    private Task<bool> ResolveKeyUrlsAsync(CancellationToken ct = default)
+    {
+        if (_resolvedUrls.TryGetValue(_currentSource, out var cached) &&
+            !string.IsNullOrEmpty(cached.DepotKeysUrl) &&
+            !string.IsNullOrEmpty(cached.TokenKeysUrl))
+            return Task.FromResult(true);
+
+        _resolvedUrls[_currentSource] = (DefaultDepotKeysUrl, DefaultTokenKeysUrl);
+        return Task.FromResult(true);
+    }
+
+    public async Task<bool> EnsureKeyFilesAsync(CancellationToken ct = default)
+    {
+        var cacheDir = GetSourceCacheDir();
+        var depotPath = GetDepotKeysPath();
+        var tokenPath = GetTokenKeysPath();
+
+        if (!Directory.Exists(cacheDir))
+            Directory.CreateDirectory(cacheDir);
+
+        if (File.Exists(depotPath) && File.Exists(tokenPath))
+            return true;
+
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                var result = await UpdateKeyFilesAsync(ct);
+                if (result.Success) return true;
+            }
+            catch (Exception ex) { LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_UpdateKeysFailed", attempt, ex.Message)); }
+
+            if (attempt < 3)
+                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct);
+        }
+        return false;
+    }
+
+    public async Task<KeyFileUpdateResult> UpdateKeyFilesAsync(CancellationToken ct = default)
+    {
+        var result = new KeyFileUpdateResult();
+
+        try
+        {
+            var cacheDir = GetSourceCacheDir();
+            if (!Directory.Exists(cacheDir))
+                Directory.CreateDirectory(cacheDir);
+
+            if (!await ResolveKeyUrlsAsync(ct))
+            {
+                result.Success = false;
+                return result;
+            }
+            var urls = _resolvedUrls[_currentSource];
+
+            var depotPath = GetDepotKeysPath();
+            var tokenPath = GetTokenKeysPath();
+
+            // 读取旧文件条目数（流式计数，避免全量字典）
+            result.DepotKeysOldCount = await CountFileJsonPropsAsync(depotPath, L.Get("Depot_OldKeys"), ct);
+            result.TokenKeysOldCount = await CountFileJsonPropsAsync(tokenPath, L.Get("Depot_OldTokens"), ct);
+
+            // 下载新文件
+            var clientName = $"steam-depot-{_currentSource}";
+            var depotTask = _httpClientProvider.SendWithProxyRetryAsync(
+                clientName,
+                TimeSpan.FromSeconds(30),
+                client => client.GetByteArrayAsync(urls.DepotKeysUrl, ct),
+                HttpHeaderHelper.ConfigureBrowser);
+            var tokenTask = _httpClientProvider.SendWithProxyRetryAsync(
+                clientName,
+                TimeSpan.FromSeconds(30),
+                client => client.GetByteArrayAsync(urls.TokenKeysUrl, ct),
+                HttpHeaderHelper.ConfigureBrowser);
+
+            await Task.WhenAll(depotTask, tokenTask);
+
+            var depotData = await depotTask;
+            await File.WriteAllBytesAsync(depotPath, depotData, ct);
+            result.DepotKeysSizeBytes = depotData.Length;
+
+            var tokenData = await tokenTask;
+            await File.WriteAllBytesAsync(tokenPath, tokenData, ct);
+            result.TokenKeysSizeBytes = tokenData.Length;
+
+            // 解析新文件条目数（轻量计数，避免再建大字典）
+            result.DepotKeysNewCount = CountJsonProps(depotData, L.Get("Depot_NewKeys"));
+            result.TokenKeysNewCount = CountJsonProps(tokenData, L.Get("Depot_NewTokens"));
+
+            // 释放大对象引用，使旧缓存与下载缓冲尽快可回收
+            depotData = null!;
+            tokenData = null!;
+            InvalidateKeyCache();
+            // 刷新为低频操作，强制回收并压缩 LOH，避免 230→300 新旧字典叠加
+            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+
+            result.Success = true;
+            WriteLastUpdateStamp(_cacheFolder);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_Home"), L.Get("Depot_UpdateKeysError", ex.Message));
+            result.Success = false;
+            return result;
+        }
+    }
+
+    // 启动时自动刷新：开关开启时，文件缺失或上次更新时间超过 24 小时的源才更新
+    public async Task EnsureAllSourcesAsync(CancellationToken ct = default)
+    {
+        if (!_settingsService.Load().AutoRefreshKeyCache)
+            return;
+
+        foreach (var source in SourceNames)
+        {
+            UseDataSource(source);
+            try
+            {
+                var filesMissing = !File.Exists(GetDepotKeysPath()) || !File.Exists(GetTokenKeysPath());
+                var last = GetLastUpdateTime(source);
+                var stale = last == null || DateTime.Now - last.Value > AutoRefreshInterval;
+                if (!filesMissing && !stale)
+                    continue;
+
+                for (int attempt = 1; attempt <= 3; attempt++)
+                {
+                    var result = await UpdateKeyFilesAsync(ct);
+                    if (result.Success) break;
+                    if (attempt < 3)
+                        await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct);
+                }
+            }
+            catch (Exception ex) { LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_BackgroundUpdateFailed", source, ex.Message)); }
+        }
+        AllSourcesUpdated?.Invoke();
+    }
+
+    public async Task<DepotQueryResult?> QueryAppAsync(int appId, CancellationToken ct = default, int timeoutSeconds = 30, int maxAttempts = 3)
+    {
+        try
+        {
+            var url = $"https://api.steamcmd.net/v1/info/{appId}";
+            var response = await _httpClientProvider.SendWithProxyRetryAsync(
+                $"steam-depot-{_currentSource}",
+                TimeSpan.FromSeconds(timeoutSeconds),
+                client => client.GetStringAsync(url, ct),
+                HttpHeaderHelper.ConfigureBrowser,
+                maxAttempts);
+            using var doc = JsonDocument.Parse(response);
+
+            if (!doc.RootElement.TryGetProperty("data", out var data)) return null;
+            if (!data.TryGetProperty(appId.ToString(), out var app)) return null;
+
+            var result = new DepotQueryResult { AppId = appId };
+
+            if (app.TryGetProperty("common", out var common) && common.TryGetProperty("name", out var name))
+                result.AppName = name.GetString() ?? $"App {appId}";
+
+            // depot 上的 dlcappid 标记该仓库属于哪个 DLC app：Steam 的 extended.listofdlc
+            // 会被服务端截断，DLC 多的游戏会缺失，两路都收再合并才完整
+            var dlcFromDepots = new List<int>();
+            var dlcFromDepotsSeen = new HashSet<int>();
+            if (app.TryGetProperty("depots", out var depots))
+            {
+                foreach (var depotProp in depots.EnumerateObject())
+                {
+                    var depotIdStr = depotProp.Name;
+                    if (!int.TryParse(depotIdStr, out var depotId)) continue;
+
+                    var depot = depotProp.Value;
+                    if (depot.TryGetProperty("depotfromapp", out _)) continue;
+
+                    // 同一 DLC 会挂多个 depot，先按首次出现去重，避免重复项堆在列表里
+                    if (depot.TryGetProperty("dlcappid", out var dlcAppIdProp))
+                    {
+                        var dlcText = dlcAppIdProp.ValueKind == JsonValueKind.Number
+                            ? dlcAppIdProp.GetRawText()
+                            : dlcAppIdProp.GetString();
+                        if (int.TryParse(dlcText, out var dlcAppId) && dlcFromDepotsSeen.Add(dlcAppId))
+                            dlcFromDepots.Add(dlcAppId);
+                    }
+
+                    var dki = new DepotKeyInfo { DepotId = depotId };
+
+                    if (depot.TryGetProperty("manifests", out var manifests) &&
+                        manifests.TryGetProperty("public", out var pub) &&
+                        pub.TryGetProperty("gid", out var gid))
+                    {
+                        dki.ManifestId = gid.GetString() ?? "";
+                    }
+
+                    result.GameDepots.Add(dki);
+                }
+            }
+
+            if (app.TryGetProperty("extended", out var ext) && ext.TryGetProperty("listofdlc", out var dlcList))
+            {
+                // 两种写法都按文本取号：数组元素可能是数字，直接 GetString 会抛异常
+                if (dlcList.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var dlcIdStr in dlcList.EnumerateArray())
+                    {
+                        var text = dlcIdStr.ValueKind == JsonValueKind.Number
+                            ? dlcIdStr.GetRawText()
+                            : dlcIdStr.GetString();
+                        if (int.TryParse(text, out var dlcId) && !result.DlcAppIds.Contains(dlcId))
+                            result.DlcAppIds.Add(dlcId);
+                    }
+                }
+                else if (dlcList.ValueKind == JsonValueKind.String)
+                {
+                    foreach (var idStr in dlcList.GetString()!.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (int.TryParse(idStr.Trim(), out var dlcId) && !result.DlcAppIds.Contains(dlcId))
+                            result.DlcAppIds.Add(dlcId);
+                    }
+                }
+            }
+
+            // listofdlc 被服务端截断时，靠 depot 的 dlcappid 把余下的 DLC 补齐；
+            // listofdlc 原有的顺序保持不变，新增项按 depot 出现顺序追加
+            var dlcSeen = new HashSet<int>(result.DlcAppIds);
+            foreach (var dlcId in dlcFromDepots)
+                if (dlcSeen.Add(dlcId))
+                    result.DlcAppIds.Add(dlcId);
+
+            // 兜底：api.steamcmd.net 返回的 depots 为空（新游戏/受 token 保护）时，
+            // 用本地 appaccesstokens.json 里的 token 向 Steam 服务器查询完整 depots 与 DLC。
+            if (result.GameDepots.Count == 0)
+            {
+                LogService.Info(L.Get("LogCat_Home"), L.Get("Depot_EmptyFallback", appId));
+                var token = await LoadLocalAppTokenAsync(appId, ct);
+                if (token != 0)
+                {
+                    var full = await _appInfoService.QueryFullAppInfoAsync(appId, token, ct);
+                    if (full != null)
+                    {
+                        result.AppName = string.IsNullOrEmpty(result.AppName) ? full.AppName : result.AppName;
+                        foreach (var depotId in full.DepotIds)
+                            result.GameDepots.Add(new DepotKeyInfo
+                            {
+                                DepotId = depotId,
+                                ManifestId = full.DepotManifests.GetValueOrDefault(depotId, "")
+                            });
+                        foreach (var dlcId in full.DlcAppIds)
+                            if (!result.DlcAppIds.Contains(dlcId))
+                                result.DlcAppIds.Add(dlcId);
+                        LogService.Info(L.Get("LogCat_Home"), L.Get("Depot_FallbackResult", appId, full.DepotIds.Count, full.DepotManifests.Count, full.DlcAppIds.Count));
+                    }
+                    else
+                    {
+                        LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_FallbackNull", appId));
+                    }
+                }
+                else
+                {
+                    LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_NoLocalToken", appId));
+                }
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // HttpClient 超时和用户取消是同一异常家族：调用方没取消就是超时，给出明确接口指向
+            throw new TimeoutException(
+                L.Get("Depot_QueryTimeout", timeoutSeconds));
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(L.Get("Depot_QueryFailed", appId, ex.Message), ex);
+        }
+    }
+
+    /// <summary>按需从 appaccesstokens.json 读取某 app 的 token（流式，避免全表字典）。</summary>
+    private async Task<ulong> LoadLocalAppTokenAsync(int appId, CancellationToken ct = default)
+    {
+        try
+        {
+            var tokenPath = GetTokenKeysPath();
+            if (!File.Exists(tokenPath)) return 0;
+            await using var fs = File.OpenRead(tokenPath);
+            using var doc = await JsonDocument.ParseAsync(fs, cancellationToken: ct);
+            if (doc.RootElement.TryGetProperty(appId.ToString(), out var val))
+            {
+                var tokenStr = val.GetString();
+                if (!string.IsNullOrEmpty(tokenStr) && ulong.TryParse(tokenStr, out var token))
+                    return token;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_ReadTokenFailed", ex.Message));
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// 判断本地 token 表里是否收录了该 app。
+    /// 仓储查询返回空时用它区分原因：有 token 说明要连 Steam 服务器查，
+    /// 没 token 说明这张表本身就不认识这个 app。
+    /// </summary>
+    public Task<bool> HasAppTokenAsync(int appId, CancellationToken ct = default)
+        => Task.FromResult(HasLocalAppToken(appId));
+
+    /// <summary>同步版本，仅供内部判断使用；文件不存在或解析失败一律当作没有。</summary>
+    private bool HasLocalAppToken(int appId)
+    {
+        try
+        {
+            var tokenPath = GetTokenKeysPath();
+            if (!File.Exists(tokenPath)) return false;
+            using var fs = File.OpenRead(tokenPath);
+            using var doc = JsonDocument.Parse(fs);
+            return doc.RootElement.TryGetProperty(appId.ToString(), out _);
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_ReadTokenFailed", ex.Message));
+            return false;
+        }
+    }
+
+    public Task<string?> GenerateLuaAsync(
+        int appId, CancellationToken ct = default, bool pinManifest = false, bool fetchNames = false)
+        => BuildLuaCoreAsync(appId, withDlc: false, pinManifest, ct, fetchNames: fetchNames);
+
+    public Task<string?> GenerateLuaWithDlcAsync(
+        int appId, CancellationToken ct = default, bool pinManifest = false,
+        IProgress<(int Done, int Total)>? dlcProgress = null, bool fetchNames = false)
+        => BuildLuaCoreAsync(appId, withDlc: true, pinManifest, ct, dlcProgress, fetchNames);
+
+    private async Task<string?> BuildLuaCoreAsync(
+        int appId, bool withDlc, bool pinManifest, CancellationToken ct,
+        IProgress<(int Done, int Total)>? dlcProgress = null, bool fetchNames = false)
+    {
+        try
+        {
+            if (!await EnsureKeyFilesAsync(ct))
+                return null;
+
+            var (depotKeys, appTokens) = await LoadKeyDictionariesAsync(ct);
+            if (depotKeys == null || appTokens == null) return null;
+
+            var queryResult = await QueryAppAsync(appId, ct);
+            if (queryResult == null) return null;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("-- lua by Fluent-Steam-Lua (https://github.com/huanyuejue/Fluent-Steam-Lua)");
+            sb.AppendLine();
+            var matchedItems = 0;
+
+            // 主 AppID 名称注释：仅勾选时查询，否则只写 ID
+            var mainStoreName = fetchNames
+                ? await TryGetDisplayNameAsync(appId, queryResult.AppName, ct)
+                : "";
+            var mainName = SanitizeLuaComment(mainStoreName);
+            if (depotKeys.TryGetValue(appId.ToString(), out var mainKey))
+            {
+                sb.AppendLine(string.IsNullOrEmpty(mainName)
+                    ? $"addappid({appId}, 1, \"{mainKey}\")"
+                    : $"addappid({appId}, 1, \"{mainKey}\") -- {mainName}");
+                matchedItems++;
+            }
+            else
+            {
+                sb.AppendLine(string.IsNullOrEmpty(mainName)
+                    ? $"addappid({appId})"
+                    : $"addappid({appId}) -- {mainName}");
+            }
+
+            // 预取各 DLC 信息并建立内容名映射：与主游戏 depot 同 ID 的 DLC
+            // 会以 depot 行写出，映射用于给这类行补名称
+            var contentNames = new Dictionary<int, string>();
+            DlcBuildInfo[]? dlcInfos = null;
+            HashSet<int> mainDepotIds = new(queryResult.GameDepots.Select(d => d.DepotId));
+            if (withDlc && queryResult.DlcAppIds.Count > 0)
+            {
+                dlcInfos = await FetchDlcInfosAsync(queryResult.DlcAppIds, dlcProgress, fetchNames, ct);
+                foreach (var info in dlcInfos)
+                    if (!string.IsNullOrWhiteSpace(info.DisplayName))
+                        contentNames[info.AppId] = info.DisplayName;
+            }
+
+            // 主游戏 depots（命中已知内容 ID 时带名称注释，其余仓库无独立名）；
+            // 未勾选 DLC 入库时跳过与 DLC AppID 同 ID 的仓库，避免 DLC 内容随 depot 行写入
+            HashSet<int>? dlcIdSet = withDlc ? null : new HashSet<int>(queryResult.DlcAppIds);
+            var skippedDlcDepots = 0;
+            var pinnedManifests = 0;
+            foreach (var depot in queryResult.GameDepots)
+            {
+                if (dlcIdSet != null && dlcIdSet.Contains(depot.DepotId))
+                {
+                    skippedDlcDepots++;
+                    continue;
+                }
+                if (depotKeys.TryGetValue(depot.DepotId.ToString(), out var key))
+                {
+                    var depotName = contentNames.TryGetValue(depot.DepotId, out var n)
+                        ? SanitizeLuaComment(n) : "";
+                    sb.AppendLine(string.IsNullOrEmpty(depotName)
+                        ? $"addappid({depot.DepotId}, 1, \"{key}\")"
+                        : $"addappid({depot.DepotId}, 1, \"{key}\") -- {depotName}");
+                    if (pinManifest && !string.IsNullOrEmpty(depot.ManifestId))
+                    {
+                        sb.AppendLine($"setManifestid({depot.DepotId},\"{depot.ManifestId}\",0)");
+                        pinnedManifests++;
+                    }
+                    depot.Key = key;
+                    depot.IsMatched = true;
+                    matchedItems++;
+                }
+            }
+            if (skippedDlcDepots > 0)
+                LogService.Info(L.Get("LogCat_Home"), L.Get("Depot_SkippedDlc", skippedDlcDepots));
+
+            // App token
+            if (appTokens.TryGetValue(appId.ToString(), out var token))
+            {
+                sb.AppendLine($"addtoken({appId}, \"{token}\")");
+                queryResult.AppToken = token;
+                matchedItems++;
+            }
+
+            // DLC 段：复用预取结果按原顺序写行；
+            // 有仓库但无密钥的 DLC 跳过裸行（写了也下载不了，报加密错误），记入 skip 列表统一提示
+            var skippedKeyless = new List<(int AppId, string Name)>();
+            if (dlcInfos != null)
+            {
+                foreach (var info in dlcInfos)
+                {
+                    var dlcName = SanitizeLuaComment(info.DisplayName);
+
+                    if (!mainDepotIds.Contains(info.AppId))
+                    {
+                        // 有密钥时只写带密钥的行，避免裸的 addappid 与带密钥的重复
+                        if (depotKeys.TryGetValue(info.AppId.ToString(), out var dlcMainKey))
+                        {
+                            sb.AppendLine(string.IsNullOrEmpty(dlcName)
+                                ? $"addappid({info.AppId}, 1, \"{dlcMainKey}\")"
+                                : $"addappid({info.AppId}, 1, \"{dlcMainKey}\") -- {dlcName}");
+                            matchedItems++;
+                        }
+                        else if (info.Result != null && info.Result.GameDepots.Count > 0)
+                        {
+                            skippedKeyless.Add((info.AppId, dlcName));
+                        }
+                        else
+                        {
+                            sb.AppendLine(string.IsNullOrEmpty(dlcName)
+                                ? $"addappid({info.AppId})"
+                                : $"addappid({info.AppId}) -- {dlcName}");
+                        }
+                        if (appTokens.TryGetValue(info.AppId.ToString(), out var dlcToken))
+                        {
+                            sb.AppendLine($"addtoken({info.AppId}, \"{dlcToken}\")");
+                            matchedItems++;
+                        }
+                    }
+                    else if (!depotKeys.ContainsKey(info.AppId.ToString()))
+                    {
+                        // 与主 depot 同 ID 的 DLC（dlcInfos 与 DlcAppIds 一一对应，无需再查）：
+                        // 主段无密钥则仓库行缺失，同样记入缺密钥
+                        skippedKeyless.Add((info.AppId, dlcName));
+                    }
+
+                    if (info.Result != null)
+                    {
+                        foreach (var depot in info.Result.GameDepots)
+                        {
+                            // 跳过与 DLC 自身 AppId 重复的 depot，避免写入两次同 ID
+                            if (depot.DepotId == info.AppId) continue;
+                            if (depotKeys.TryGetValue(depot.DepotId.ToString(), out var depKey))
+                            {
+                                sb.AppendLine($"addappid({depot.DepotId}, 1, \"{depKey}\")");
+                                if (pinManifest && !string.IsNullOrEmpty(depot.ManifestId))
+                                {
+                                    sb.AppendLine($"setManifestid({depot.DepotId},\"{depot.ManifestId}\",0)");
+                                    pinnedManifests++;
+                                }
+                                matchedItems++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (skippedKeyless.Count > 0)
+                LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_SkippedKeyless", string.Join(", ", skippedKeyless.Select(s => string.IsNullOrEmpty(s.Name) ? s.AppId.ToString() : $"{s.AppId} {s.Name}"))));
+
+            if (pinManifest)
+                LogService.Info(L.Get("LogCat_Home"), pinnedManifests > 0
+                    ? L.Get("Depot_Pinned", pinnedManifests)
+                    : L.Get("Depot_PinNoManifest"));
+
+            if (matchedItems == 0)
+                throw new InvalidOperationException(
+                    L.Get("Depot_KeyStoreEmpty", appId));
+
+            var luaFolder = _steamPathService.GetLuaFolder();
+            if (string.IsNullOrEmpty(luaFolder)) return null;
+
+            if (!Directory.Exists(luaFolder))
+                Directory.CreateDirectory(luaFolder);
+
+            var luaPath = Path.Combine(luaFolder, $"{appId}.lua");
+            await File.WriteAllTextAsync(luaPath, sb.ToString(), ct);
+
+            return luaPath;
+        }
+        catch (InvalidOperationException) { throw; }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_Home"), L.Get("Depot_GenFailed", appId, withDlc ? L.Get("Depot_GenWithDlc") : "", ex.Message));
+            return null;
+        }
+    }
+
+    private sealed record DlcBuildInfo(int AppId, DepotQueryResult? Result, string DisplayName);
+
+    // Chinese names prefer Heybox; English names prefer the localized Store response.
+    private async Task<string> TryGetDisplayNameAsync(int appId, string steamcmdName, CancellationToken ct)
+    {
+        if (LocalizationService.Instance.CurrentLanguage != "zh")
+            return await TryGetStoreNameAsync(appId, steamcmdName, ct);
+
+        try
+        {
+            var (heiName, _, _) = await XiaoHeiHeService.GetGameDetailAsync(appId, ct);
+            if (!string.IsNullOrWhiteSpace(heiName)) return heiName;
+        }
+        catch { }
+        if (!string.IsNullOrWhiteSpace(steamcmdName)) return steamcmdName;
+        return await TryGetStoreNameAsync(appId, "", ct);
+    }
+
+    // 并发预取各 DLC 的仓库信息；名称注释仅勾选时查询，否则只写 ID；
+    // 限流避免触发站点风控，批量查询 10 秒单次；入库流程未接取消，单项异常（含超时）全部吞掉记缺省，不拖垮整批
+    private async Task<DlcBuildInfo[]> FetchDlcInfosAsync(
+        List<int> dlcAppIds, IProgress<(int Done, int Total)>? progress, bool fetchNames, CancellationToken ct)
+    {
+        var infos = new DlcBuildInfo[dlcAppIds.Count];
+        var done = 0;
+        await Parallel.ForEachAsync(Enumerable.Range(0, dlcAppIds.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
+            async (index, innerCt) =>
+            {
+                var appId = dlcAppIds[index];
+                try
+                {
+                    // 先拿仓库（门禁与 depot 行必需），名字用现成 steamcmd 名垫底，Store 只在双缺时才打
+                    var result = await QueryAppAsync(appId, innerCt, timeoutSeconds: 10, maxAttempts: 1).ConfigureAwait(false);
+                    var displayName = "";
+                    if (fetchNames)
+                        displayName = await TryGetDisplayNameAsync(appId, result?.AppName ?? "", innerCt).ConfigureAwait(false);
+                    infos[index] = new DlcBuildInfo(appId, result, displayName);
+                }
+                catch (Exception ex)
+                {
+                    LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_FetchDlcInfoFailed", appId, ex.Message));
+                    infos[index] = new DlcBuildInfo(appId, null, "");
+                }
+                progress?.Report((Interlocked.Increment(ref done), dlcAppIds.Count));
+            }).ConfigureAwait(false);
+        return infos;
+    }
+
+    // 批量查各 DLC 是否有独立仓库：6 路并行（与预取同限流），单个失败记 null（未知）；
+    // AppName 顺带给对话框垫底显示，零成本
+    public async Task<Dictionary<int, DlcDepotStatus?>> GetDlcHasDepotsAsync(
+        IEnumerable<int> dlcIds, IProgress<(int Done, int Total)>? progress = null, CancellationToken ct = default)
+    {
+        var ids = dlcIds.ToList();
+        var map = new Dictionary<int, DlcDepotStatus?>();
+        var done = 0;
+        await Parallel.ForEachAsync(ids,
+            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
+            async (id, innerCt) =>
+            {
+                DlcDepotStatus? status = null;
+                try
+                {
+                    var r = await QueryAppAsync(id, innerCt, timeoutSeconds: 10, maxAttempts: 1);
+                    if (r != null) status = new DlcDepotStatus(r.GameDepots.Count > 0, r.AppName ?? "");
+                }
+                // 仅调用方主动取消才中断整批；单项超时视为未知，回退旧启发式
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_QueryDlcFailed", id, ex.Message));
+                }
+                lock (map) { map[id] = status; }
+                progress?.Report((Interlocked.Increment(ref done), ids.Count));
+            }).ConfigureAwait(false);
+        return map;
+    }
+
+    private async Task<(Dictionary<string, string>? DepotKeys, Dictionary<string, string>? AppTokens)> LoadKeyDictionariesAsync(CancellationToken ct)
+    {
+        var depotPath = GetDepotKeysPath();
+        var tokenPath = GetTokenKeysPath();
+
+        // 缓存命中：同源且文件未变更则直接复用
+        var depotWrite = File.Exists(depotPath) ? File.GetLastWriteTimeUtc(depotPath) : DateTime.MinValue;
+        var tokenWrite = File.Exists(tokenPath) ? File.GetLastWriteTimeUtc(tokenPath) : DateTime.MinValue;
+        if (_cachedDepotKeys != null && _cachedAppTokens != null
+            && _cachedSource == _currentSource
+            && _cachedDepotKeysWriteTime == depotWrite
+            && _cachedAppTokensWriteTime == tokenWrite)
+        {
+            return (_cachedDepotKeys, _cachedAppTokens);
+        }
+
+        await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // 双检
+            depotWrite = File.Exists(depotPath) ? File.GetLastWriteTimeUtc(depotPath) : DateTime.MinValue;
+            tokenWrite = File.Exists(tokenPath) ? File.GetLastWriteTimeUtc(tokenPath) : DateTime.MinValue;
+            if (_cachedDepotKeys != null && _cachedAppTokens != null
+                && _cachedSource == _currentSource
+                && _cachedDepotKeysWriteTime == depotWrite
+                && _cachedAppTokensWriteTime == tokenWrite)
+            {
+                return (_cachedDepotKeys, _cachedAppTokens);
+            }
+
+            await using var depotStream = File.OpenRead(depotPath);
+            await using var tokenStream = File.OpenRead(tokenPath);
+            var depotKeys = await JsonSerializer.DeserializeAsync<Dictionary<string, string>>(depotStream, cancellationToken: ct)
+                ?? new Dictionary<string, string>();
+            var appTokens = await JsonSerializer.DeserializeAsync<Dictionary<string, string>>(tokenStream, cancellationToken: ct)
+                ?? new Dictionary<string, string>();
+
+            _cachedDepotKeys = depotKeys;
+            _cachedAppTokens = appTokens;
+            _cachedDepotKeysWriteTime = depotWrite;
+            _cachedAppTokensWriteTime = tokenWrite;
+            _cachedSource = _currentSource;
+            return (depotKeys, appTokens);
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_Home"), L.Get("Depot_ReadKeysFailed", ex.Message));
+            return (null, null);
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+
+    private void InvalidateKeyCache()
+    {
+        _cachedDepotKeys = null;
+        _cachedAppTokens = null;
+        _cachedSource = null;
+    }
+
+    /// <summary>
+    /// 主动放掉常驻密钥字典。这些字典按文件时间戳校验，
+    /// 释放后下次用到会重新读取，语义与文件变更失效一致。
+    /// </summary>
+    public void ReleaseKeyCache()
+    {
+        try
+        {
+            _cacheLock.Wait();
+        }
+        catch
+        {
+            return;
+        }
+
+        try
+        {
+            InvalidateKeyCache();
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+
+    public async Task<DlcFetchResult> FetchDlcAsync(string luaPath, int dlcAppId, bool hasOwnDepot, CancellationToken ct = default, string? dlcName = null)
+    {
+        var result = new DlcFetchResult();
+        try
+        {
+            // 名称注释与整包生成保持一致：有中文名则拼在行尾
+            var nameComment = SanitizeLuaComment(dlcName);
+            var commentSuffix = string.IsNullOrEmpty(nameComment) ? "" : $" -- {nameComment}";
+
+            // 0. 本地密钥仓库有该 DLC 主 ID 的密钥 → 直接写带密钥行（有没有独立 depot 都正确，
+            // 覆盖 HasDepot 瞬时误判丢 key 的缺口；读内存缓存字典，无网络开销）
+            var (localKeys, _) = await LoadKeyDictionariesAsync(ct);
+            if (localKeys != null &&
+                localKeys.TryGetValue(dlcAppId.ToString(), out var cachedKey) &&
+                !string.IsNullOrEmpty(cachedKey))
+            {
+                result.NeedKey = true;
+                await AppendLinesToLuaAsync(luaPath,
+                    new List<string> { $"addappid({dlcAppId}, 1, \"{cachedKey}\"){commentSuffix}" }, ct);
+                result.Success = true;
+                result.Message = L.Get("Depot_DlcKeyOk", dlcAppId);
+                return result;
+            }
+
+            // 1. 无独立 depot → 无需密钥，直接写入
+            if (!hasOwnDepot)
+            {
+                result.NeedKey = false;
+                await AppendLinesToLuaAsync(luaPath, new List<string> { $"addappid({dlcAppId}){commentSuffix}" }, ct);
+                result.Success = true;
+                result.Message = L.Get("Depot_DlcNoDepot", dlcAppId);
+                return result;
+            }
+
+            // 2. 有独立 depot → 需要密钥，从本地密钥仓库搜索
+            result.NeedKey = true;
+
+            var prevSource = _currentSource;
+            UseDataSource("DepotKey");
+            try
+            {
+                if (!await EnsureKeyFilesAsync(ct))
+                {
+                    result.Message = L.Get("Depot_NoKeyStore");
+                    return result;
+                }
+
+                string? dlcMainKey = null;
+                // 常驻字典按 mtime 复用：Ensure 刚刷新过文件会重读，与上面整文件重解析等价
+                var (refreshedKeys, _) = await LoadKeyDictionariesAsync(ct);
+                if (refreshedKeys == null)
+                {
+                    LogService.Warn(L.Get("LogCat_FetchDlc"), L.Get("Depot_ReadKeyStoreFailed"));
+                    result.Message = L.Get("Depot_ReadKeyStoreFailed");
+                    return result;
+                }
+                refreshedKeys.TryGetValue(dlcAppId.ToString(), out dlcMainKey);
+
+                // 查找 DLC 自身主 AppID 的密钥
+                if (!string.IsNullOrEmpty(dlcMainKey))
+                {
+                    var lines = new List<string> { $"addappid({dlcAppId}, 1, \"{dlcMainKey}\"){commentSuffix}" };
+                    await AppendLinesToLuaAsync(luaPath, lines, ct);
+                    result.Success = true;
+                    result.Message = L.Get("Depot_DlcKeyOk", dlcAppId);
+                }
+                else
+                {
+                    result.Message = L.Get("Depot_DlcKeyMissing", dlcAppId);
+                }
+            }
+            finally
+            {
+                UseDataSource(prevSource);
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_FetchDlc"), L.Get("Depot_FetchDlcFailed", dlcAppId, ex.Message));
+            result.Message = L.Get("Depot_FetchFailed", ex.Message);
+            return result;
+        }
+    }
+
+    private static async Task AppendLinesToLuaAsync(string luaPath, List<string> lines, CancellationToken ct = default)
+    {
+        if (lines == null || lines.Count == 0) return;
+
+        var dir = Path.GetDirectoryName(luaPath);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
+
+        var existing = File.Exists(luaPath) ? await File.ReadAllTextAsync(luaPath, ct) : string.Empty;
+        var newLines = new List<string>();
+
+        foreach (var line in lines)
+        {
+            var match = Regex.Match(line, @"addappid\((\d+)");
+            if (match.Success && Regex.IsMatch(existing, $@"\baddappid\(\s*{match.Groups[1].Value}\s*[,\)]"))
+                continue; // 已存在则跳过
+            newLines.Add(line);
+        }
+
+        if (newLines.Count == 0)
+        {
+            LogService.Info(L.Get("LogCat_FetchDlc"), L.Get("Depot_LinesSkipped"));
+            return;
+        }
+
+        var sb = new StringBuilder(existing.TrimEnd());
+        if (sb.Length > 0)
+            sb.AppendLine();
+        sb.AppendLine(string.Join(Environment.NewLine, newLines));
+
+        await File.WriteAllTextAsync(luaPath, sb.ToString(), ct);
+        LogService.Info(L.Get("LogCat_FetchDlc"), L.Get("Depot_LinesWritten", newLines.Count, luaPath));
+    }
+
+    private static string SanitizeLuaComment(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        return text.Replace("\r", " ").Replace("\n", " ").Trim();
+    }
+
+    private async Task<string> TryGetStoreNameAsync(int appId, string fallbackName, CancellationToken ct)
+    {
+        var language = LocalizationService.Instance.CurrentLanguage == "zh" ? "schinese" : "english";
+        try
+        {
+            var json = await _httpClientProvider.SendWithProxyRetryAsync(
+                "store-name",
+                TimeSpan.FromSeconds(10),
+                client => client.GetStringAsync($"https://store.steampowered.com/api/appdetails?appids={appId}&l={language}", ct),
+                HttpHeaderHelper.ConfigureBrowserJson);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty(appId.ToString(), out var appData)
+                && appData.TryGetProperty("success", out var success) && success.GetBoolean()
+                && appData.TryGetProperty("data", out var data)
+                && data.TryGetProperty("name", out var name))
+            {
+                var n = name.GetString();
+                if (!string.IsNullOrWhiteSpace(n)) return n;
+            }
+        }
+        catch
+        {
+            // 无商店页的 DLC 与断网属预期情形，静默回退到 steamcmd 名，避免刷告警
+        }
+        return fallbackName;
+    }
+}

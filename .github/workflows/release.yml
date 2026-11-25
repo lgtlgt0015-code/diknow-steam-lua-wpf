@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（例如 1.4.5；支持 1.4.8.1 或 1.4.8-fix，空格会自动转连字符）"
+        required: true
+      prerelease:
+        description: "预发布版本"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Validate version and tag
+        shell: pwsh
+        env:
+          VERSION_RAW: ${{ inputs.version }}
+        run: |
+          $raw = $env:VERSION_RAW.Trim()
+          if ([string]::IsNullOrWhiteSpace($raw)) { throw "版本号不能为空" }
+          # 空格/下划线统一转连字符：1.4.8 fix → 1.4.8-fix（tag/文件名/csproj 都合法）
+          $version = $raw -replace '[\s_]+', '-'
+          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?(-[0-9A-Za-z.-]+)?$') { throw "版本号格式非法，应为 x.y.z，可选 .w 或 -后缀（如 1.4.8.1、1.4.8-fix）；当前输入：$raw" }
+          git fetch --tags --quiet
+          if (git tag --list $version) { throw "tag $version 已存在，停止" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "LOOSE_ZIP=diknow-steam-lua-$version-loose-file.zip" >> $env:GITHUB_ENV
+          "SINGLE_ZIP=diknow-steam-lua-$version-single-file.zip" >> $env:GITHUB_ENV
+
+      - name: Bump csproj version and push
+        shell: pwsh
+        run: |
+          $csproj = 'SteamLuaManager.csproj'
+          $text = [System.IO.File]::ReadAllText((Resolve-Path $csproj).Path)
+          $updated = [System.Text.RegularExpressions.Regex]::Replace(
+            $text, '<Version>[^<]*</Version>', '<Version>${{ env.VERSION }}</Version>')
+          if ($updated -eq $text) { throw 'csproj 中未找到 <Version> 节点' }
+          [System.IO.File]::WriteAllText(
+            (Resolve-Path $csproj).Path, $updated, (New-Object System.Text.UTF8Encoding($false)))
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add SteamLuaManager.csproj
+          git commit -m 'update: 版本号更新${{ env.VERSION }}'
+          git push origin HEAD:main
+
+      - name: Create tag
+        shell: pwsh
+        run: |
+          git tag '${{ env.VERSION }}'
+          git push origin '${{ env.VERSION }}'
+
+      - name: Publish loose-file version
+        run: dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:Version=${{ env.VERSION }} -o publish/loose
+
+      - name: Publish single-file version
+        run: dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="diknow-steam-lua" -p:PublishSingleFile=true -p:Version=${{ env.VERSION }} -o publish/single
+
+      - name: Pack archives
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish/loose/* -DestinationPath $env:LOOSE_ZIP
+          Compress-Archive -Path publish/single/* -DestinationPath $env:SINGLE_ZIP
+          Get-ChildItem *.zip | Select-Object Name, Length
+
+      - name: Compose release notes
+        shell: pwsh
+        run: |
+          $header = '# diknow-steam-lua ${{ env.VERSION }}'
+          $footer = Get-Content .github/RELEASE_FOOTER.md -Raw -Encoding utf8NoBOM
+          $footer = $footer.Replace('{LOOSE_ZIP}', $env:LOOSE_ZIP).Replace('{SINGLE_ZIP}', $env:SINGLE_ZIP)
+          Set-Content release-notes.md -Value ($header + "`n`n" + $footer) -Encoding utf8NoBOM
+          Get-Content release-notes.md -Encoding utf8NoBOM
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: ${{ env.VERSION }}
+          body_path: release-notes.md
+          prerelease: ${{ inputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: |
+            ${{ env.LOOSE_ZIP }}
+            ${{ env.SINGLE_ZIP }}

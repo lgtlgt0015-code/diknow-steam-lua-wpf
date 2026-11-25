@@ -1,0 +1,887 @@
+﻿using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Microsoft.Win32;
+using Tomlyn;
+using Tomlyn.Model;
+
+namespace SteamLuaManager.Services;
+
+public class SteamPathService : ISteamPathService
+{
+    // 32 位 Steam 在 WOW6432Node 下，64 位在主视图；用户级记录另存一份，
+    // 只认其中一个会在部分机器上漏检，进而回退到并不存在的默认路径
+    private const string RegistryPath = @"SOFTWARE\WOW6432Node\Valve\Steam";
+    private const string RegistryPath64 = @"SOFTWARE\Valve\Steam";
+    private const string RegistryPathUser = @"Software\Valve\Steam";
+    private const string InstallPathKey = "InstallPath";
+    private const string SteamPathKey = "SteamPath";
+    private const string LuaSubFolder = @"config\lua";
+    private const string ConfigFileName = "opensteamtool.toml";
+    private const string ExampleConfigFileName = "opensteamtool.example.toml";
+    private string? _customPath;
+
+    // 探测结果缓存：注册表加多路径试探的单次耗时在几十毫秒量级，
+    // 而调用点散布在很多界面路径上，不缓存会在启动和切页时反复扫盘。
+    // 只缓存成功结果，未找到时保持每次重试，装完 Steam 不必重启程序。
+    private string? _cachedSteamPath;
+
+    // 配置文件解析缓存（按最后写入时间失效，支持修改 toml 后即时生效）
+    private string? _cachedConfigFile;
+    private DateTime _cachedConfigTime = DateTime.MinValue;
+    private List<string>? _cachedLuaPaths;
+
+    private string? DetectSteamPathInternal()
+    {
+        return !string.IsNullOrEmpty(_customPath) ? _customPath : DetectSteamPath();
+    }
+
+    // Steam 目录判定：除 steam.exe 外再看一眼只有真实安装才有的子目录，
+    // 用来把曾经装过、现已迁走的残留目录和当前生效的安装区分开
+    private static bool LooksLikeSteamInstall(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return false;
+        if (!File.Exists(Path.Combine(path, "steam.exe"))) return false;
+        return Directory.Exists(Path.Combine(path, "steamapps"))
+            || Directory.Exists(Path.Combine(path, "config"))
+            || Directory.Exists(Path.Combine(path, "appcache"))
+            || Directory.Exists(Path.Combine(path, "userdata"));
+    }
+
+    public string? DetectSteamPath() => _cachedSteamPath ??= DetectSteamPathCore();
+
+    private string? DetectSteamPathCore()
+    {
+        // 注册表有多处可能登记安装路径：64 位 Steam 在主视图，32 位在 WOW6432Node，
+        // 另有一份用户级记录（值为 SteamPath 而非 InstallPath）。逐处尝试，命中即返回。
+        var registryProbes = new (RegistryKey Hive, string SubKey, string ValueName)[]
+        {
+            (Registry.LocalMachine, RegistryPath, InstallPathKey),
+            (Registry.LocalMachine, RegistryPath64, InstallPathKey),
+            (Registry.CurrentUser, RegistryPathUser, SteamPathKey),
+        };
+        foreach (var probe in registryProbes)
+        {
+            try
+            {
+                using var key = probe.Hive.OpenSubKey(probe.SubKey);
+                if (key?.GetValue(probe.ValueName) is string installPath &&
+                    LooksLikeSteamInstall(installPath))
+                    return installPath;
+            }
+            catch
+            {
+            }
+        }
+
+        string[] commonPaths = new[]
+        {
+            @"C:\Program Files (x86)\Steam",
+            @"C:\Program Files\Steam",
+            @"D:\Steam",
+            @"D:\Program Files (x86)\Steam",
+            @"E:\Steam",
+            @"E:\Program Files (x86)\Steam"
+        };
+
+        // 先找特征齐全的安装；只剩残留时再退回仅凭 steam.exe 命中的目录，
+        // 保持旧行为可用，同时优先选中真正生效的那一份
+        string? looseMatch = null;
+        foreach (var path in commonPaths)
+        {
+            if (!File.Exists(Path.Combine(path, "steam.exe"))) continue;
+            if (LooksLikeSteamInstall(path)) return path;
+            looseMatch ??= path;
+        }
+
+        return looseMatch;
+    }
+
+    /// <summary>返回当前生效的 OpenSteamTool 配置文件路径。
+    /// 优先 opensteamtool.toml；仅存在 example 演示模板时先重命名为 toml 再返回。</summary>
+    public string? GetLuaConfigFile()
+    {
+        var basePath = DetectSteamPathInternal();
+        if (string.IsNullOrEmpty(basePath)) return null;
+
+        var primary = Path.Combine(basePath, ConfigFileName);
+        if (File.Exists(primary)) return primary;
+
+        var example = Path.Combine(basePath, ExampleConfigFileName);
+        if (!File.Exists(example)) return null;
+
+        // example 只是演示模板，实际生效需重命名为 opensteamtool.toml
+        try
+        {
+            File.Move(example, primary);
+            _cachedConfigFile = null;
+            LogService.Info(L.Get("LogCat_SteamPath"), L.Get("Svc_CfgRenamed", ExampleConfigFileName, ConfigFileName));
+            return primary;
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_CfgRenameFailed", ExampleConfigFileName, ConfigFileName, ex.Message));
+            return example;
+        }
+    }
+
+    /// <summary>解析配置文件 [lua] paths 数组（null = 未配置或不可用）。</summary>
+    private List<string>? GetConfiguredLuaPaths()
+    {
+        var configFile = GetLuaConfigFile();
+        if (configFile == null) return null;
+
+        var lastWrite = File.GetLastWriteTimeUtc(configFile);
+        if (configFile == _cachedConfigFile && lastWrite == _cachedConfigTime)
+            return _cachedLuaPaths;
+
+        _cachedConfigFile = configFile;
+        _cachedConfigTime = lastWrite;
+        _cachedLuaPaths = null;
+
+        try
+        {
+            var model = TomlSerializer.Deserialize<TomlTable>(File.ReadAllText(configFile));
+            if (model != null &&
+                model.TryGetValue("lua", out var luaRaw) &&
+                luaRaw is TomlTable luaTable &&
+                luaTable.TryGetValue("paths", out var pathsRaw) &&
+                pathsRaw is TomlArray pathsArray)
+            {
+                var list = pathsArray.OfType<string>()
+                    .Select(p => p.Trim())
+                    .Where(p => p.Length > 0)
+                    .ToList();
+                _cachedLuaPaths = list;
+                if (list.Count > 0)
+                {
+                    LogService.Info(L.Get("LogCat_SteamPath"), L.Get("Svc_LuaDirRead", configFile, string.Join(", ", list)));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_LuaDirReadFailed", ex.Message));
+        }
+
+        return _cachedLuaPaths;
+    }
+
+    public string? GetLuaFolder()
+    {
+        var basePath = DetectSteamPathInternal();
+        if (string.IsNullOrEmpty(basePath)) return null;
+
+        var configured = GetConfiguredLuaPaths();
+        string luaPath;
+        if (configured is { Count: > 0 })
+        {
+            // 相对路径基于 Steam 根目录解析为绝对路径（与 OpenSteamTool 工作目录语义一致）
+            var absolute = configured
+                .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(basePath, p)))
+                .ToList();
+            // 取第一个实际存在的目录；都不存在则取第一个
+            var existing = absolute.FirstOrDefault(Directory.Exists);
+            luaPath = existing ?? absolute[0];
+        }
+        else
+        {
+            luaPath = Path.Combine(basePath, LuaSubFolder);
+        }
+
+        if (!Directory.Exists(luaPath))
+        {
+            try { Directory.CreateDirectory(luaPath); }
+            catch (Exception ex) { LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_LuaDirCreateFailed", ex.Message)); return null; }
+        }
+        return luaPath;
+    }
+
+    /// <summary>将用户指定路径写入配置文件 [lua] paths（保留原注释，文本级修改）。</summary>
+    public bool SetConfiguredLuaPath(string path)
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return false;
+
+            var configFile = GetLuaConfigFile() ?? Path.Combine(basePath, ExampleConfigFileName);
+            var lines = File.Exists(configFile)
+                ? File.ReadAllLines(configFile).ToList()
+                : new List<string>();
+
+            var escaped = path.Replace("\\", "/").Replace("\"", "\\\"");
+            var newLine = $"paths = [\"{escaped}\"]";
+
+            var luaSectionStart = -1;
+            for (var i = 0; i < lines.Count; i++)
+            {
+                if (lines[i].Trim() == "[lua]")
+                {
+                    luaSectionStart = i;
+                    break;
+                }
+            }
+
+            if (luaSectionStart < 0)
+            {
+                lines.Add("[lua]");
+                lines.Add(newLine);
+            }
+            else
+            {
+                var sectionEnd = lines.Count;
+                for (var i = luaSectionStart + 1; i < lines.Count; i++)
+                {
+                    var t = lines[i].Trim();
+                    if (t.StartsWith('[') && t.EndsWith(']'))
+                    {
+                        sectionEnd = i;
+                        break;
+                    }
+                }
+
+                var pathsLine = -1;
+                for (var i = luaSectionStart + 1; i < sectionEnd; i++)
+                {
+                    var s = lines[i].TrimStart();
+                    if (!s.StartsWith('#') && s.StartsWith("paths", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pathsLine = i;
+                        break;
+                    }
+                }
+
+                if (pathsLine >= 0)
+                    lines[pathsLine] = newLine;
+                else
+                    lines.Insert(sectionEnd, newLine);
+            }
+
+            File.WriteAllLines(configFile, lines);
+            _cachedConfigFile = null;
+            LogService.Info(L.Get("LogCat_SteamPath"), L.Get("Svc_LuaDirWritten", configFile, path));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_SteamPath"), L.Get("Svc_LuaDirWriteCfgFailed", ex));
+            return false;
+        }
+    }
+
+    /// <summary>删除配置文件 [lua] paths 指定，恢复默认 config\lua（保留注释）。</summary>
+    public bool ResetConfiguredLuaPath()
+    {
+        try
+        {
+            var configFile = GetLuaConfigFile();
+            if (configFile == null || !File.Exists(configFile)) return true;
+
+            var lines = File.ReadAllLines(configFile).ToList();
+
+            var luaSectionStart = -1;
+            for (var i = 0; i < lines.Count; i++)
+            {
+                if (lines[i].Trim() == "[lua]")
+                {
+                    luaSectionStart = i;
+                    break;
+                }
+            }
+
+            if (luaSectionStart < 0) return true;
+
+            var sectionEnd = lines.Count;
+            for (var i = luaSectionStart + 1; i < lines.Count; i++)
+            {
+                var t = lines[i].Trim();
+                if (t.StartsWith('[') && t.EndsWith(']'))
+                {
+                    sectionEnd = i;
+                    break;
+                }
+            }
+
+            for (var i = sectionEnd - 1; i > luaSectionStart; i--)
+            {
+                var s = lines[i].TrimStart();
+                if (!s.StartsWith('#') && s.StartsWith("paths", StringComparison.OrdinalIgnoreCase))
+                {
+                    lines.RemoveAt(i);
+                    break;
+                }
+            }
+
+            File.WriteAllLines(configFile, lines);
+            _cachedConfigFile = null;
+            LogService.Info(L.Get("LogCat_SteamPath"), L.Get("Svc_LuaDirCleared", configFile));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_SteamPath"), L.Get("Svc_LuaDirClearFailed", ex));
+            return false;
+        }
+    }
+
+    // 好友游玩状态广播开关，我直接读写内核的 [presence] display：只有 "none" 算关闭，
+    // 文件/节/键任一缺失都按内核缺省（广播开启）处理，读不到就当开
+    public bool GetFriendBroadcastEnabled()
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return true;
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            if (!File.Exists(configFile)) return true;
+
+            var lines = File.ReadAllLines(configFile);
+            var (sectionStart, sectionEnd) = FindTomlSection(lines, "presence");
+            if (sectionStart < 0) return true;
+
+            foreach (var line in lines.Skip(sectionStart + 1).Take(sectionEnd - sectionStart - 1))
+            {
+                var value = ParseTomlStringValue(line, "display");
+                if (value != null)
+                    return !value.Equals("none", StringComparison.OrdinalIgnoreCase);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_BroadcastReadFailed", ex.Message));
+            return true;
+        }
+    }
+
+    // 文本级改 [presence] display，注释原样保留；无文件则新建、无节则底部追加
+    public bool SetFriendBroadcastEnabled(bool enabled)
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return false;
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            var newLine = $"display = \"{(enabled ? "spacewar" : "none")}\"";
+
+            if (!File.Exists(configFile))
+            {
+                File.WriteAllLines(configFile, [L.Get("Svc_TomlHeader"), "", "[presence]", newLine]);
+            }
+            else
+            {
+                var lines = File.ReadAllLines(configFile).ToList();
+                var (sectionStart, sectionEnd) = FindTomlSection(lines, "presence");
+
+                if (sectionStart < 0)
+                {
+                    if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
+                        lines.Add(string.Empty);
+                    lines.Add("[presence]");
+                    lines.Add(newLine);
+                }
+                else
+                {
+                    var displayLine = -1;
+                    for (var i = sectionStart + 1; i < sectionEnd; i++)
+                    {
+                        if (ParseTomlStringValue(lines[i], "display") != null)
+                        {
+                            displayLine = i;
+                            break;
+                        }
+                    }
+
+                    if (displayLine >= 0)
+                        lines[displayLine] = newLine;
+                    else
+                        lines.Insert(sectionStart + 1, newLine);
+                }
+
+                File.WriteAllLines(configFile, lines);
+            }
+
+            _cachedConfigFile = null;
+            LogService.Info(L.Get("LogCat_SteamPath"), L.Get("Svc_BroadcastWritten", enabled ? L.Get("Common_Enabled") : L.Get("Common_Disabled"), configFile));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_SteamPath"), L.Get("Svc_BroadcastWriteFailed", ex));
+            return false;
+        }
+    }
+
+    // 在行列表里定位指定 TOML 节的起止行（含头、不含下一个节头）
+    private static (int start, int end) FindTomlSection(List<string> lines, string section)
+    {
+        var start = -1;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var t = lines[i].Trim();
+            if (t.StartsWith('#')) continue;
+            var header = t.Split('#', 2)[0].Trim();
+            if (header.Equals($"[{section}]", StringComparison.OrdinalIgnoreCase))
+            {
+                start = i;
+                break;
+            }
+        }
+        if (start < 0) return (-1, -1);
+
+        var end = lines.Count;
+        for (var i = start + 1; i < lines.Count; i++)
+        {
+            var t = lines[i].Trim();
+            if (t.StartsWith('#') || t.Length == 0) continue;
+            if (t.StartsWith('['))
+            {
+                end = i;
+                break;
+            }
+        }
+        return (start, end);
+    }
+
+    private static (int start, int end) FindTomlSection(string[] lines, string section) =>
+        FindTomlSection(lines.ToList(), section);
+
+    // 解析 "key = value" 行的字符串值；注释行、非目标键、非字符串值返回 null
+    private static string? ParseTomlStringValue(string line, string key)
+    {
+        var s = line.TrimStart();
+        if (s.Length == 0 || s.StartsWith('#')) return null;
+        if (!s.StartsWith(key, StringComparison.OrdinalIgnoreCase)) return null;
+
+        var rest = s.Substring(key.Length).TrimStart();
+        if (!rest.StartsWith('=')) return null;
+
+        var value = rest.Substring(1).Trim();
+        if (value.StartsWith('#')) return null;
+        // 去掉行尾注释后再去引号，display 只关心裸值
+        var hash = value.IndexOf('#');
+        if (hash >= 0) value = value.Substring(0, hash).Trim();
+        return value.Trim().Trim('"', '\'');
+    }
+
+    // 解析 "key = true/false" 裸布尔值；注释行、非目标键、非布尔值返回 null
+    private static bool? ParseTomlBoolValue(string line, string key)
+    {
+        var s = line.TrimStart();
+        if (s.Length == 0 || s.StartsWith('#')) return null;
+        if (!s.StartsWith(key, StringComparison.OrdinalIgnoreCase)) return null;
+
+        var rest = s.Substring(key.Length).TrimStart();
+        if (!rest.StartsWith('=')) return null;
+
+        var value = rest.Substring(1).Trim();
+        var hash = value.IndexOf('#');
+        if (hash >= 0) value = value.Substring(0, hash).Trim();
+        if (value.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+        if (value.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
+        return null;
+    }
+
+    // 清单库切换：读 [manifest] url 值，缺省 "20770407"（内核默认值）
+    public string GetManifestSource()
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return "20770407";
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            if (!File.Exists(configFile)) return "20770407";
+
+            var lines = File.ReadAllLines(configFile);
+            var (sectionStart, sectionEnd) = FindTomlSection(lines, "manifest");
+            if (sectionStart < 0) return "20770407";
+
+            foreach (var line in lines.Skip(sectionStart + 1).Take(sectionEnd - sectionStart - 1))
+            {
+                var value = ParseTomlStringValue(line, "url");
+                if (value != null && value.Length > 0)
+                    return value;
+            }
+            return "20770407";
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_ManifestReadFailed", ex.Message));
+            return "20770407";
+        }
+    }
+
+    // 文本级改 [manifest] url，与 SetFriendBroadcastEnabled 同模式
+    public bool SetManifestSource(string source)
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return false;
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            var newLine = $"url = \"{source}\"";
+
+            if (!File.Exists(configFile))
+            {
+                File.WriteAllLines(configFile, [L.Get("Svc_TomlHeader"), "", "[manifest]", newLine]);
+            }
+            else
+            {
+                var lines = File.ReadAllLines(configFile).ToList();
+                var (sectionStart, sectionEnd) = FindTomlSection(lines, "manifest");
+
+                if (sectionStart < 0)
+                {
+                    if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
+                        lines.Add(string.Empty);
+                    lines.Add("[manifest]");
+                    lines.Add(newLine);
+                }
+                else
+                {
+                    var urlLine = -1;
+                    for (var i = sectionStart + 1; i < sectionEnd; i++)
+                    {
+                        if (ParseTomlStringValue(lines[i], "url") != null)
+                        {
+                            urlLine = i;
+                            break;
+                        }
+                    }
+                    if (urlLine >= 0)
+                        lines[urlLine] = newLine;
+                    else
+                        lines.Insert(sectionStart + 1, newLine);
+                }
+
+                File.WriteAllLines(configFile, lines);
+            }
+
+            _cachedConfigFile = null;
+            LogService.Info(L.Get("LogCat_SteamPath"), L.Get("Svc_ManifestSwitched", source, configFile));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_SteamPath"), L.Get("Svc_ManifestWriteFailed", ex));
+            return false;
+        }
+    }
+
+    // 清单失败自动顺位：读 [manifest] failover 裸值，缺省 true（与内核默认一致）
+    public bool GetManifestFailoverEnabled()
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return true;
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            if (!File.Exists(configFile)) return true;
+
+            var lines = File.ReadAllLines(configFile);
+            var (sectionStart, sectionEnd) = FindTomlSection(lines, "manifest");
+            if (sectionStart < 0) return true;
+
+            foreach (var line in lines.Skip(sectionStart + 1).Take(sectionEnd - sectionStart - 1))
+            {
+                var value = ParseTomlBoolValue(line, "failover");
+                if (value != null) return value.Value;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_FailoverReadFailed", ex.Message));
+            return true;
+        }
+    }
+
+    // 文本级改 [manifest] failover，与 SetCloudEnabled 同模式；内核热加载即时生效
+    public bool SetManifestFailoverEnabled(bool enabled)
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return false;
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            var newLine = $"failover = {(enabled ? "true" : "false")}";
+            List<string> lines;
+
+            if (!File.Exists(configFile))
+            {
+                lines = [L.Get("Svc_TomlHeader"), "", "[manifest]", newLine];
+            }
+            else
+            {
+                lines = File.ReadAllLines(configFile).ToList();
+                var (sectionStart, sectionEnd) = FindTomlSection(lines, "manifest");
+
+                if (sectionStart < 0)
+                {
+                    if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
+                        lines.Add(string.Empty);
+                    lines.Add("[manifest]");
+                    lines.Add(newLine);
+                }
+                else
+                {
+                    // 任意 failover 赋值行（合法与否）都整体替换，避免重复键
+                    var failoverLine = -1;
+                    for (var i = sectionStart + 1; i < sectionEnd; i++)
+                    {
+                        var t = lines[i].TrimStart();
+                        if (t.Length == 0 || t.StartsWith('#')) continue;
+                        if (!t.StartsWith("failover", StringComparison.OrdinalIgnoreCase)) continue;
+                        var rest = t.Substring("failover".Length).TrimStart();
+                        if (!rest.StartsWith('=')) continue;
+                        failoverLine = i;
+                        break;
+                    }
+
+                    if (failoverLine >= 0)
+                        lines[failoverLine] = newLine;
+                    else
+                        lines.Insert(sectionStart + 1, newLine);
+                }
+            }
+
+            // 原子落盘：崩溃只丢 tmp，不截断原文件（与 SetCloudEnabled 对齐）
+            var tmp = configFile + ".new";
+            File.WriteAllLines(tmp, lines);
+            File.Move(tmp, configFile, overwrite: true);
+
+            _cachedConfigFile = null;
+            LogService.Info(L.Get("LogCat_SteamPath"), L.Get("Svc_FailoverWritten", enabled ? L.Get("Common_Enabled") : L.Get("Common_Disabled"), configFile));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_SteamPath"), L.Get("Svc_FailoverWriteFailed", ex));
+            return false;
+        }
+    }
+
+    // 自定义路径变更后必须丢弃探测缓存，否则切换目录仍会沿用上一次的结果
+    public void SetCustomPath(string path)
+    {
+        _customPath = path;
+        _cachedSteamPath = null;
+    }
+
+    public string? GetCustomPath() => _customPath;
+
+    // 云存档开关：读 [cloud] enabled 裸值，缺省 false（内核默认关闭）
+    public bool GetCloudEnabled()
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return false;
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            if (!File.Exists(configFile)) return false;
+
+            var lines = File.ReadAllLines(configFile);
+            var (sectionStart, sectionEnd) = FindTomlSection(lines, "cloud");
+            if (sectionStart < 0) return false;
+
+            foreach (var line in lines.Skip(sectionStart + 1).Take(sectionEnd - sectionStart - 1))
+            {
+                var value = ParseTomlBoolValue(line, "enabled");
+                if (value != null) return value.Value;
+            }
+            return false;
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_CloudCfgReadFailed", ex.Message));
+            return false;
+        }
+    }
+
+    // 文本级改 [cloud] enabled，注释原样保留；无文件则新建、无节则底部追加；开关变更需重启 Steam 生效
+    public bool SetCloudEnabled(bool enabled)
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return false;
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            var newLine = $"enabled = {(enabled ? "true" : "false")}";
+            List<string> lines;
+
+            if (!File.Exists(configFile))
+            {
+                lines = [L.Get("Svc_TomlHeaderCloud"), "", "[cloud]", newLine];
+            }
+            else
+            {
+                lines = File.ReadAllLines(configFile).ToList();
+                var (sectionStart, sectionEnd) = FindTomlSection(lines, "cloud");
+
+                if (sectionStart < 0)
+                {
+                    if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
+                        lines.Add(string.Empty);
+                    lines.Add("[cloud]");
+                    lines.Add(newLine);
+                }
+                else
+                {
+                    // 任意 enabled 赋值行（合法与否）都整体替换，避免重复键
+                    var enabledLine = -1;
+                    for (var i = sectionStart + 1; i < sectionEnd; i++)
+                    {
+                        var t = lines[i].TrimStart();
+                        if (t.Length == 0 || t.StartsWith('#')) continue;
+                        if (!t.StartsWith("enabled", StringComparison.OrdinalIgnoreCase)) continue;
+                        var rest = t.Substring("enabled".Length).TrimStart();
+                        if (!rest.StartsWith('=')) continue;
+                        enabledLine = i;
+                        break;
+                    }
+
+                    if (enabledLine >= 0)
+                        lines[enabledLine] = newLine;
+                    else
+                        lines.Insert(sectionStart + 1, newLine);
+                }
+            }
+
+            // 原子落盘：崩溃只丢 tmp，不截断原文件
+            var tmp = configFile + ".new";
+            File.WriteAllLines(tmp, lines);
+            File.Move(tmp, configFile, overwrite: true);
+
+            _cachedConfigFile = null;
+            LogService.Info(L.Get("LogCat_SteamPath"), L.Get("Svc_CloudWritten", enabled ? L.Get("Common_Enabled") : L.Get("Common_Disabled"), configFile));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogService.Error(L.Get("LogCat_SteamPath"), L.Get("Svc_CloudWriteFailed", ex));
+            return false;
+        }
+    }
+
+    // [cloud] library 原始值（绝对路径或相对 Steam 根目录）；未配置返回 null，走内核默认位置
+    public string? GetCloudLibraryPath()
+    {
+        try
+        {
+            var basePath = DetectSteamPathInternal();
+            if (string.IsNullOrEmpty(basePath)) return null;
+
+            var configFile = Path.Combine(basePath, ConfigFileName);
+            if (!File.Exists(configFile)) return null;
+
+            var lines = File.ReadAllLines(configFile);
+            var (sectionStart, sectionEnd) = FindTomlSection(lines, "cloud");
+            if (sectionStart < 0) return null;
+
+            foreach (var line in lines.Skip(sectionStart + 1).Take(sectionEnd - sectionStart - 1))
+            {
+                var value = ParseTomlStringValue(line, "library");
+                if (!string.IsNullOrEmpty(value)) return value;
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_CloudLibReadFailed", ex.Message));
+            return null;
+        }
+    }
+
+    public SteamToolType DetectSteamToolType()
+    {
+        var steamPath = !string.IsNullOrEmpty(_customPath) ? _customPath : DetectSteamPath();
+        if (string.IsNullOrEmpty(steamPath)) return SteamToolType.None;
+
+        // OpenSteamTool (开源) — 以主 DLL 为准判已安装；toml 只是配置文件，
+        // 卸载只删 DLL 不删 toml，若把它算进来卸载后仍会误判已安装
+        if (File.Exists(Path.Combine(steamPath, "OpenSteamTool.dll")))
+            return SteamToolType.OpenSteamTool;
+
+        // SteamTools (闭源) — 独有标识；stplug-in 只是它存 lua 的目录，
+        // 不影响注入，残留它不算装了内核；steam.cfg 是 Steam 自身的配置，
+        // 用户常用它关自动更新，不能当内核标志
+        if (File.Exists(Path.Combine(steamPath, "hid.dll")) ||
+            File.Exists(Path.Combine(steamPath, "zlib1.dll")))
+            return SteamToolType.SteamTools;
+
+        // GreenLuma — 原版 Steam 根目录没有 User32.dll；greenluma*.dll 版号嵌文件名，通配扫
+        if (File.Exists(Path.Combine(steamPath, "User32.dll")))
+            return SteamToolType.GreenLuma;
+        try
+        {
+            if (Directory.EnumerateFiles(steamPath, "greenluma*.dll").Any())
+                return SteamToolType.GreenLuma;
+        }
+        catch { }
+
+        return SteamToolType.None;
+    }
+
+    public List<string> GetAllLibraryPaths()
+    {
+        var paths = new List<string>();
+        var steamPath = !string.IsNullOrEmpty(_customPath) ? _customPath : DetectSteamPath();
+        if (string.IsNullOrEmpty(steamPath)) return paths;
+
+        paths.Add(steamPath);
+
+        var vdfPath = Path.Combine(steamPath, @"steamapps\libraryfolders.vdf");
+        if (!File.Exists(vdfPath)) return paths;
+
+        try
+        {
+            var content = File.ReadAllText(vdfPath);
+
+            // 新版格式: "1"\n{\n\t"path"\t"C:\\..."
+            var sectionMatches = Regex.Matches(content,
+                @"""\d+""\s*\{[^}]*""path""\s+""([^""]+)""",
+                RegexOptions.Singleline);
+            foreach (Match match in sectionMatches)
+            {
+                var libPath = match.Groups[1].Value.Replace("\\\\", "\\");
+                if (!paths.Contains(libPath))
+                    paths.Add(libPath);
+            }
+
+            // 旧版格式: "1"  "path" (当新版未匹配到时)
+            if (sectionMatches.Count == 0)
+            {
+                var flatMatches = Regex.Matches(content, @"""\d+""\s+""([^""]+)""");
+                foreach (Match match in flatMatches)
+                {
+                    var libPath = match.Groups[1].Value.Replace("\\\\", "\\");
+                    if (!paths.Contains(libPath))
+                        paths.Add(libPath);
+                }
+            }
+        }
+        catch (Exception ex) { LogService.Warn(L.Get("LogCat_SteamPath"), L.Get("Svc_LibVdfReadFailed", ex.Message)); }
+
+        return paths;
+    }
+
+    public string? FindAppManifest(int appId)
+    {
+        foreach (var libPath in GetAllLibraryPaths())
+        {
+            var acfPath = Path.Combine(libPath, @"steamapps", $"appmanifest_{appId}.acf");
+            if (File.Exists(acfPath))
+                return acfPath;
+        }
+        return null;
+    }
+}
