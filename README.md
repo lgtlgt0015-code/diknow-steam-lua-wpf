@@ -141,8 +141,3 @@ dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained fal
 dotnet publish SteamLuaManager.csproj -c Release -r win-x64 --self-contained false -p:DebugType=none -p:AppExeName="diknow-steam-lua" -o publish/loose
 ```
 
-## 许可与致谢
-
-- 本项目基于 [Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua) 修改，沿用其 zlib License，见 [LICENSE](LICENSE)
-- 云存档重定向基于 [CloudRedirect](https://github.com/huanyuejue/CloudRedirect)（MIT License）
-- 其他第三方组件与许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
