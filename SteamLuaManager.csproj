@@ -15,7 +15,7 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <Title>diknow-steam-lua</Title>
     <Product>diknow-steam-lua</Product>
-    <Version>1.5.5.4</Version>
+    <Version>1.5.5.5</Version>
   </PropertyGroup>
 
   <ItemGroup>
