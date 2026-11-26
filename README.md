@@ -12,9 +12,7 @@
   </a>
 </p>
 
-基于 WPF + Fluent Design 的 Steam Lua 入库管理工具个人定制版，派生自 [Fluent-Steam-Lua](https://github.com/huanyuejue/Fluent-Steam-Lua)，目前仅适配 OpenSteamTool。
-
-> 这是非官方的个人修改版，与原版作者无关，也不提供原版的社群与反馈渠道。
+基于 WPF + Fluent Design 的 Steam Lua 入库管理工具个人定制版，目前仅适配 OpenSteamTool。
 
 ## 本版改动
 
